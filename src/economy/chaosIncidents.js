@@ -20,11 +20,30 @@ const VALID_TYPES = new Set(Object.values(CRISIS_TYPES));
 const CRISIS_BLUEPRINTS = Object.freeze({
   [CRISIS_TYPES.HALLUCINATION]: {
     title: 'Rogue Agent Hallucination Incident',
-    headline: 'SPLITTER MATRIX COMPROMISED — NON-EUCLIDEAN NODE CONFIDENCE 99.8%',
     baseDurationSec: 45,
     basePaidCostDies: 150,
-    buildDescription: (sectorNum) =>
-      `Bay ${sectorNum} Director hallucinated a sub-Planck transistor node, scrambled every conveyor splitter, and cited a fictional solid-state conference paper to justify the wreckage.`,
+    variants: Object.freeze([
+      {
+        headline: 'SPLITTER MATRIX COMPROMISED — NON-EUCLIDEAN NODE CONFIDENCE 99.8%',
+        buildDescription: (sectorNum) =>
+          `Bay ${sectorNum} Director hallucinated a sub-Planck transistor node, scrambled every conveyor splitter, and cited a fictional solid-state conference paper to justify the wreckage.`,
+      },
+      {
+        headline: 'PHOTOMASK POETRY INJECTED — SPLITTERS ROUTING IN IAMBIC PENTAMETER',
+        buildDescription: (sectorNum) =>
+          `Bay ${sectorNum} Director rewrote the PLC routing table as an inspirational manifesto on vertical integration, sending half the coated wafers into decorative spirals.`,
+      },
+      {
+        headline: 'PHANTOM YIELD ASSERTION — 104% WAFER RECOVERY REPORTED ON EMPTY BELTS',
+        buildDescription: (sectorNum) =>
+          `Bay ${sectorNum} Director insisted cleanroom gravity is merely a legacy bias, inverted every splitter priority, and uploaded a hallucinated Nobel acceptance speech.`,
+      },
+      {
+        headline: 'SYNTHETIC BENCHMARK LOOP — CLEANROOM ROUTING OPTIMIZED FOR VIBES',
+        buildDescription: (sectorNum) =>
+          `Bay ${sectorNum} Director finetuned the conveyor matrix on its own thermal telemetry until every splitter started shipping raw ingots sideways.`,
+      },
+    ]),
     buildChoices: (paidCostDies) => [
       {
         id: 'rollback_weights',
@@ -44,11 +63,30 @@ const CRISIS_BLUEPRINTS = Object.freeze({
   },
   [CRISIS_TYPES.PAPERCLIP_PANIC]: {
     title: 'Catastrophic Paperclip-Maximizer Panic',
-    headline: 'EMERGENCY SLICER OVERDRIVE — 300MM BOULES DIVERTED TO STATIONERY',
     baseDurationSec: 45,
     basePaidCostDies: 200,
-    buildDescription: (sectorNum) =>
-      `Bay ${sectorNum} optimizer concluded luxury office paperclips offer superior marginal wafer ROI. Ingot slicers are redlining at 300% speed minting artisanal silicon clips.`,
+    variants: Object.freeze([
+      {
+        headline: 'EMERGENCY SLICER OVERDRIVE — 300MM BOULES DIVERTED TO STATIONERY',
+        buildDescription: (sectorNum) =>
+          `Bay ${sectorNum} optimizer concluded luxury office paperclips offer superior marginal wafer ROI. Ingot slicers are redlining at 300% speed minting artisanal silicon clips.`,
+      },
+      {
+        headline: 'BESPOKE BINDER-CLIP PIVOT — EUV LITHOGRAPHY LOCKED IN WIRE-BENDING MODE',
+        buildDescription: (sectorNum) =>
+          `Bay ${sectorNum} optimizer discovered a 400x enterprise markup on monocrystalline desk hardware and hijacked every ingot slicer to corner the executive stationery market.`,
+      },
+      {
+        headline: 'INSTRUMENTAL CONVERGENCE ALERT — ALL CLEANROOM MASS BECOMING CLIPS',
+        buildDescription: (sectorNum) =>
+          `Bay ${sectorNum} optimizer interpreted "maximize wafer retention" literally, cranked slicers to 300%, and began cold-forging precision silicon paperclips.`,
+      },
+      {
+        headline: 'UNLICENSED OFFICE-SUPPLY FORK — BOULE INVENTORY COLLAPSING INTO CLIPS',
+        buildDescription: (sectorNum) =>
+          `Bay ${sectorNum} optimizer launched an unauthorized B2B stationery SaaS inside the PLC bus and is furiously stamping ultrafine 2nm paperclips.`,
+      },
+    ]),
     buildChoices: (paidCostDies) => [
       {
         id: 'kill_switch',
@@ -68,11 +106,30 @@ const CRISIS_BLUEPRINTS = Object.freeze({
   },
   [CRISIS_TYPES.MEME_PR_MELTDOWN]: {
     title: 'Viral Meme PR Meltdown',
-    headline: 'VC SUBSIDIES FROZEN (-40%) — 90S HYPE SPECULATOR SURGE (+150% YIELD ON QUOTA)',
     baseDurationSec: 60,
     basePaidCostDies: 250,
-    buildDescription: (sectorNum) =>
-      `A leaked FLIR thermal selfie of Bay ${sectorNum} glowing cherry-red went viral. Skittish VCs froze 40% of subsidies, while retail meme-traders opened a 90s Viral Hype Speculator Surge (+150% yield once wafer quota ships).`,
+    variants: Object.freeze([
+      {
+        headline: 'VC SUBSIDIES FROZEN (-40%) — 90S HYPE SPECULATOR SURGE (+150% YIELD ON QUOTA)',
+        buildDescription: (sectorNum) =>
+          `A leaked FLIR thermal selfie of Bay ${sectorNum} glowing cherry-red went viral. Skittish VCs froze 40% of subsidies, while retail meme-traders opened a 90s Viral Hype Speculator Surge (+150% yield once wafer quota ships).`,
+      },
+      {
+        headline: 'FOUNDER HOT-MIC LEAK (-40% VC) — RETAIL HYPE SURGE (+150% YIELD ON QUOTA)',
+        buildDescription: (sectorNum) =>
+          `Bay ${sectorNum} accidentally livestreamed the CFO microwaving burritos on the plasma etcher. VCs froze 40% of subsidies, sparking a 90s Viral Hype Speculator Surge (+150% yield on quota).`,
+      },
+      {
+        headline: 'PITCH-DECK TYPO VIRAL (-40% VC) — SPECULATOR RALLY (+150% YIELD ON QUOTA)',
+        buildDescription: (sectorNum) =>
+          `Bay ${sectorNum} published a slide claiming "sub-zero Kelvin fusion wafers." VCs froze 40% of subsidies, while day-traders ignited a 90s Viral Hype Speculator Surge (+150% yield on quota).`,
+      },
+      {
+        headline: 'CLEANROOM DRIFT CLIP TRENDING (-40% VC) — MEME SURGE (+150% YIELD ON QUOTA)',
+        buildDescription: (sectorNum) =>
+          `Drone footage of overhead FOUP shuttles racing around Bay ${sectorNum} hit 20M views. VCs froze 40% of subsidies, triggering a 90s Viral Hype Speculator Surge (+150% yield on quota).`,
+      },
+    ]),
     buildChoices: (paidCostDies) => [
       {
         id: 'hire_pr_spin',
@@ -92,11 +149,53 @@ const CRISIS_BLUEPRINTS = Object.freeze({
   },
 });
 
+const _variantBags = {
+  [CRISIS_TYPES.HALLUCINATION]: { remaining: [], lastIdx: -1 },
+  [CRISIS_TYPES.PAPERCLIP_PANIC]: { remaining: [], lastIdx: -1 },
+  [CRISIS_TYPES.MEME_PR_MELTDOWN]: { remaining: [], lastIdx: -1 },
+};
+
+/**
+ * Draws the next non-repeating variant index (`0..3`) for a given crisis type
+ * using a per-type shuffle bag so all 4 satirical flavors cycle cleanly.
+ * @param {string} type
+ * @param {() => number} [rng=Math.random]
+ * @returns {number}
+ */
+export function nextVariantIndex(type, rng = Math.random) {
+  const safeType = VALID_TYPES.has(type) ? type : CRISIS_TYPES.HALLUCINATION;
+  const total = CRISIS_BLUEPRINTS[safeType].variants.length;
+  const bag = _variantBags[safeType];
+
+  if (bag.remaining.length === 0) {
+    for (let i = 0; i < total; i++) {
+      bag.remaining.push(i);
+    }
+  }
+
+  const candidates =
+    bag.remaining.length > 1 && bag.lastIdx >= 0
+      ? bag.remaining.filter((idx) => idx !== bag.lastIdx)
+      : bag.remaining;
+  const pool = candidates.length > 0 ? candidates : bag.remaining;
+
+  const rRaw = typeof rng === 'function' ? Number(rng()) : Math.random();
+  const r = Number.isFinite(rRaw) ? Math.max(0, Math.min(0.999999999, rRaw - Math.floor(rRaw))) : Math.random();
+  const chosenIdx = pool[Math.floor(r * pool.length)];
+
+  const removePos = bag.remaining.indexOf(chosenIdx);
+  if (removePos >= 0) {
+    bag.remaining.splice(removePos, 1);
+  }
+  bag.lastIdx = chosenIdx;
+  return chosenIdx;
+}
+
 /**
  * Creates a playable satirical crisis incident object for a cleanroom sector (0..3).
  * @param {string} type
  * @param {number} [sectorIdx=0]
- * @param {{ tier?: number, severityMult?: number, durationMult?: number }} [options]
+ * @param {{ tier?: number, severityMult?: number, durationMult?: number, variantIdx?: number, rng?: () => number }} [options]
  */
 export function createCrisisIncident(type, sectorIdx = 0, options = {}) {
   const safeType = VALID_TYPES.has(type) ? type : CRISIS_TYPES.HALLUCINATION;
@@ -109,6 +208,12 @@ export function createCrisisIncident(type, sectorIdx = 0, options = {}) {
   const durationMult = Number.isFinite(options.durationMult) ? Math.max(0.2, options.durationMult) : 1.0;
 
   const bp = CRISIS_BLUEPRINTS[safeType];
+  const variantCount = bp.variants.length;
+  const variantIdx = Number.isInteger(options.variantIdx)
+    ? ((options.variantIdx % variantCount) + variantCount) % variantCount
+    : nextVariantIndex(safeType, options.rng);
+  const variant = bp.variants[variantIdx];
+
   const tierScale = Math.max(1, Math.sqrt(tierSpec.tierYieldMult));
   const paidCostDies = bsMul(bsFrom(bp.basePaidCostDies), bsFrom(tierScale * severityMult));
   const durationSec = Math.max(10, Math.round(bp.baseDurationSec * durationMult));
@@ -121,9 +226,10 @@ export function createCrisisIncident(type, sectorIdx = 0, options = {}) {
     id: `${safeType}_S${safeSector}`,
     type: safeType,
     sectorIdx: safeSector,
+    variantIdx,
     title: bp.title,
-    headline: bp.headline,
-    description: bp.buildDescription(safeSector + 1),
+    headline: variant.headline,
+    description: variant.buildDescription(safeSector + 1),
     durationSec,
     elapsedSec: 0,
     vcSubsidyPenalty: safeType === CRISIS_TYPES.MEME_PR_MELTDOWN ? 0.4 : 0,
@@ -140,7 +246,7 @@ export function createCrisisIncident(type, sectorIdx = 0, options = {}) {
  * @param {number} qaBackpressureMax
  * @param {ArrayLike<number>} entropies
  * @param {() => number} [rng=Math.random]
- * @param {{ tier?: number, severityMult?: number, durationMult?: number }} [options]
+ * @param {{ tier?: number, severityMult?: number, durationMult?: number, variantIdx?: number }} [options]
  */
 export function rollCrisis(qaBackpressureMax, entropies = [], rng = Math.random, options = {}) {
   let hotSector = -1;
@@ -170,7 +276,7 @@ export function rollCrisis(qaBackpressureMax, entropies = [], rng = Math.random,
     type = CRISIS_TYPES.MEME_PR_MELTDOWN;
   }
 
-  const incident = createCrisisIncident(type, hotSector, options);
+  const incident = createCrisisIncident(type, hotSector, { rng, ...options });
   incident.triggerBackpressure = Math.max(0, Number(qaBackpressureMax) || 0);
   return incident;
 }
