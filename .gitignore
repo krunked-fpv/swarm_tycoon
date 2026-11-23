@@ -1,0 +1,18 @@
+# Backup, vault-temp, and scratch artifacts
+*.bak
+*.cookie_bak
+*.tmp
+*.log
+
+# Worktrees & local scratch directories
+.worktrees/
+.scratch/
+scratch/
+coverage/
+.cache/
+
+# Dependencies & OS cruft
+node_modules/
+.DS_Store
+Thumbs.db
+desktop.ini
