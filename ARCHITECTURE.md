@@ -31,12 +31,12 @@ It deploys directly as static assets to GitHub Pages (`https://krunked-fpv.githu
 ```
 
 ### Strict Dependency Direction
-1. **`src/sim/*`**: Pure deterministic JavaScript using flat `TypedArray`s. Imports ONLY sibling files inside `src/sim/`. Zero DOM, Phaser, or storage dependencies.
-2. **`src/economy/*`**: Pure deterministic JavaScript (`BigSilicon` `{ m, e }` arithmetic, tiers, prestige, AI directors, crises). Imports ONLY sibling files inside `src/economy/`. Zero DOM or Phaser dependencies.
-3. **`src/persistence/*`**: Pure storage, cryptography/checksums (`FNV-1a`), RLE `#blueprint=` codec, and analytical offline catch-up solver. Uses plain-object contracts (`{ m, e }` and layout snapshots) with zero imports from `src/sim/`, `src/economy/`, `src/render/`, or `src/ui/`. Supports injectable storage adapters for deterministic Node testing.
-4. **`src/render/*`**: Consumes read-only simulation & economy getters passed via `hooks` at scene construction; references `globalThis.Phaser` loaded via `./vendor/phaser.min.js`. Never mutates simulation arrays directly.
-5. **`src/audio/*`**: Pure native Web Audio API procedural DSP synthesizer driven by telemetry snapshots and UI/sim events. Zero external media assets.
-6. **`src/ui/*` & `src/main.js`**: Orchestrator binding `sim`, `economy`, `persistence`, `render`, and `audio`, managing fixed-timestep tick loops, isolated Daily Challenge sessions, PWA `beforeinstallprompt`, and `./sw.js` registration.
+1. **`src/sim/*`**: Pure deterministic JavaScript (`GridEngine` uses flat `TypedArray`s; `levelPool.js` & `secretMinigame.js` supply 24 BFS-validated expedition nodes and the 30s Laser Defender mini-game). Zero DOM, Phaser, or storage dependencies (`secretMinigame.js` uses `bigSilicon.js` and `scaleTiers.js` for reward scaling).
+2. **`src/economy/*`**: Pure deterministic JavaScript (`BigSilicon` `{ m, e }` arithmetic, tiers, prestige, AI directors, 12-variant crises). Imports ONLY sibling files inside `src/economy/`. Zero DOM or Phaser dependencies.
+3. **`src/persistence/*`**: Pure storage, cryptography/checksums (`FNV-1a`), RLE `#blueprint=` codec, and analytical offline catch-up solver. Uses plain-object contracts (`{ m, e }`, layout snapshots, and `expedition` masks) with zero imports from `src/sim/`, `src/economy/`, `src/render/`, or `src/ui/`. Supports injectable storage adapters for deterministic Node testing.
+4. **`src/render/*`**: Consumes read-only simulation & economy getters passed via `hooks` at scene construction; references `globalThis.Phaser` loaded via `./vendor/phaser.min.js`. Renders spring placement pops, vault jackpots, 360-particle celebrations, and tablet paint-drag input without mutating simulation arrays directly.
+5. **`src/audio/*`**: Pure native Web Audio API procedural DSP synthesizer driven by telemetry snapshots and UI/sim events (including celebration fanfares, airlock whooshes, and escalating harmonic pops). Zero external media assets.
+6. **`src/ui/*` & `src/main.js`**: Orchestrator binding `sim`, `economy`, `persistence`, `render`, and `audio`, managing fixed-timestep tick loops, isolated Daily & 24-node Expedition sandboxes, Secret Arcade modal (`levelsModal.js`, `secretMinigameModal.js`), PWA `beforeinstallprompt`, and `./sw.js` registration.
 
 ## 3. Dual-Engine Timing Model
 - **Simulation Clock**: Fixed `TICK_MS = 100` (10Hz deterministic step). Accumulated via `dt` clamped to `<= 250ms` per frame to prevent tab-switch spiral of death (long gaps are routed through `offlineCatchupSolver.js` when exceeding `5000ms`).
@@ -46,7 +46,7 @@ It deploys directly as static assets to GitHub Pages (`https://krunked-fpv.githu
 - **Primary Storage**: `localStorage["swarm_tycoon_save_v1"]` mirrored asynchronously to IndexedDB (`swarm_tycoon_idb_v1`).
 - **Shadow Cookie Vault**: `document.cookie` key `krunked-cookie-vault-v1` storing a compact, FNV-1a signed, Base64URL-encoded payload (`< 3800` bytes) embedding `BP1_` blueprint compression of the active cleanroom grid.
 - **Self-Healing Guarantee**: Deleting `localStorage` + IndexedDB auto-heals from `krunked-cookie-vault-v1` on next hydration; deleting cookies auto-regenerates `krunked-cookie-vault-v1` from `localStorage`. `beforeunload` / `visibilitychange` flush skips overwriting when either store is missing, and `blueprintModal.js` surfaces live diagnostics plus reload wipe drills.
-- **Offline PWA**: `./manifest.json` (`display: "standalone"`, `start_url: "./"`, `scope: "./"`) + `./sw.js` (`swarm-tycoon-cache-v1`) with network-first dynamic fetch for HTML/JS/CSS, cache cleanup on `activate`, and live `#sw-telemetry-pill` status.
+- **Offline PWA**: `./manifest.json` (`display: "standalone"`, `start_url: "./"`, `scope: "./"`) + `./sw.js` (`swarm-tycoon-cache-v2`) with network-first dynamic fetch for HTML/JS/CSS, cache cleanup on `activate`, and live `#sw-telemetry-pill` status.
 
 ## 5. Exclusive Module Ownership Map
 - `src/sim/*`, `tests/sim.test.js` -> `@fab-grid-physicist`

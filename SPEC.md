@@ -2,7 +2,7 @@
 
 ## 1. Global Constants
 - **Project ID**: `swarm_tycoon // IDEA-00438`
-- **PWA Cache Version**: `CACHE_VERSION = 'swarm-tycoon-cache-v1'`
+- **PWA Cache Version**: `CACHE_VERSION = 'swarm-tycoon-cache-v2'`
 - **Primary Save Key**: `PRIMARY_SAVE_KEY = 'swarm_tycoon_save_v1'`
 - **Daily Save Key**: `DAILY_SAVE_KEY = 'swarm_tycoon_daily_v1'`
 - **Shadow Cookie Name**: `COOKIE_VAULT_NAME = 'krunked-cookie-vault-v1'`
@@ -107,6 +107,10 @@ Starter Tier 01 supplies `15.0 kW` at facility substation anchor `(0, 0)` (and a
   - `splitMix32(seedInt)`, `hashSeedString(str)`
   - `generateDailyChallenge(utcDateStr = todayUtc())` using `"IDEA00438-" + utcDateStr` -> `{ seedId, dateStr, gridSize: 12, pillars: Array<{x,y}>, modifiers: { powerMult, ambientK, defectBias, targetScore }, durationSec: 900 }` (guaranteed flood-fill open path across `(0,0)`..`(11,11)`).
   - `computeDailyEfficiencyScore({ vaultedGood, avgKelvin, brownoutTicks, elapsedSec, totalBackpressure }) -> number`.
+- `levelPool.js`:
+  - `LEVEL_POOL` (24 unique cleanroom nodes `N01..N24`, 4 per Tier `1..6`), `buildLevelChallenge(nodeId)` (BFS-connected pillar layout), `pickNextUnseenLevel(bagMask, maxTier, rng)` (24-bit non-repeating shuffle bag), `QUIP_POOL` (24 quips), `drawNextQuip(bagState, rng)`.
+- `secretMinigame.js`:
+  - `MINIGAME_WIDTH = 640`, `MINIGAME_HEIGHT = 400`, `ROUND_DURATION_SEC = 30`, `WAFER_CORE`, `SecretLaserGame` (`reset`, `spawnTarget`, `fireAt`, `step`, `getState` for `'dust'|'clip'|'cryo'|'star'`), and `computeMinigameReward(score, tier)`.
 
 ---
 
@@ -138,6 +142,7 @@ Starter Tier 01 supplies `15.0 kW` at facility substation anchor `(0, 0)` (and a
   entropies: [0, 0, 0, 0],
   paperclips: 0,
   audio: { vol: 0.6, mute: false },
+  expedition: { clearedMask: 0, bagMask: 0, secretUnlocked: false, secretBest: 0 },
   layout: { gridSize: 8, tier: 1, agents: [-1, -1, -1, -1], cells: [...] },
   bp: "BP1_...",
   sig: "a1b2c3d4" // 8-char FNV-1a over canonical JSON without sig
@@ -149,7 +154,7 @@ Base64URL-encoded UTF-8 JSON containing:
 ```js
 {
   v: 1, tClose, tier, dies, flops, lifetimeFlops,
-  shards, hwm, fleetLvl, prestige, agents, vol, mute, bp, sig
+  shards, hwm, fleetLvl, prestige, agents, vol, mute, xp: [clearedMask, bagMask, 0|1, secretBest], bp, sig
 }
 ```
 Signed by `fnv1aHex` over canonical string. Validated strictly on read; rejected if `sig` mismatches or fields fail schema bounds.
@@ -181,11 +186,11 @@ Binary byte layout:
 ## 6. Renderer, WebAudio & Command Deck Contracts
 - **`IsoCleanroomScene` / `createCleanroomGame(containerEl, hooks)` (`src/render/isoScene.js`)**:
   - `hooks: { getGridEngine, getEconomyState, onTileAction, onHoverTile }`
-  - Returned controller methods: `setHeatmapMode(mode)` (`0=Off, 1=Thermal, 2=Backpressure, 3=Power`), `setToolState(tool)` (`{ toolId, dir, sub }`), `syncGridSize()`, `triggerPrestigeVfx()`, `centerCamera()`, `getMeasuredFps()`, `destroy()`
+  - Returned controller methods: `setHeatmapMode(mode)` (`0=Off, 1=Thermal, 2=Backpressure, 3=Power`), `setToolState(tool)` (`{ toolId, dir, sub }`), `setPaintDragMode(enabled)`, `getPaintDragMode()`, `syncGridSize()`, `triggerPrestigeVfx()`, `triggerCelebrationVfx(intensity)`, `centerCamera()`, `getMeasuredFps()`, `destroy()`
 - **`AudioEngine` (`src/audio/audioEngine.js`)**:
   - `unlock()`, `setMasterVolume(v)`, `setMuted(muted)`
   - `getState()` -> `{ unlocked, vol, mute, volume, muted, contextState }`
   - `updateTelemetry({ totalMw, brownoutLevel, activeCrisis, scramCount })`
-  - `playClick()`, `playPlace()`, `playWaferComplete()`, `playEuvFlash()`, `playShuttleLaunch()`, `playPrestigeSwell()`, `playKlaxon(kind)`
-- **Command Deck Diagnostics (`src/main.js`, `src/ui/blueprintModal.js`, `index.html`)**:
-  - `#fps-telemetry-pill` (120-frame rolling rAF FPS), `#sw-telemetry-pill` (`./sw.js` lifecycle), `#vault-status-pill` (`HEALED: cookie-vault` / `REGEN: cookie-vault`), `window.__SWARM_TYCOON__` diagnostic handle, and reload wipe drills (`#btn-drill-wipe-primary`, `#btn-drill-wipe-cookie`).
+  - `playClick()`, `playPlace()`, `playWaferComplete()`, `playEuvFlash()`, `playShuttleLaunch()`, `playPrestigeSwell()`, `playKlaxon(kind)`, `playCelebrationFanfare(intensity)`, `playTransitionWhoosh()`, `playNodeUnlockPop(step)`
+- **Command Deck Diagnostics (`src/main.js`, `src/ui/blueprintModal.js`, `src/ui/levelsModal.js`, `src/ui/secretMinigameModal.js`, `index.html`)**:
+  - `#fps-telemetry-pill`, `#sw-telemetry-pill`, `#vault-status-pill`, `#btn-paint-mode`, `#btn-open-levels`, `#btn-secret-arcade`, `#brand-secret-trigger`, `#transition-curtain`, `#celebration-banner`, `window.__SWARM_TYCOON__`, and reload wipe drills (`#btn-drill-wipe-primary`, `#btn-drill-wipe-cookie`).
