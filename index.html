@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#080C12">
+  <meta name="description" content="Swarm Tycoon: Silicon Foundry — Zero-backend isometric semiconductor cleanroom and autonomous AI foundry simulator.">
+  <title>Swarm Tycoon: Silicon Foundry</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+  <link rel="icon" type="image/png" href="./icons/icon-192.png">
+  <link rel="stylesheet" href="./styles/cleanroom.css">
+</head>
+<body>
+  <div id="app-shell" class="app-shell">
+    <header id="hud-bar" class="hud-bar" role="banner"></header>
+    <div id="daily-banner" class="daily-banner" role="region" aria-label="Daily Challenge Status" hidden></div>
+
+    <main id="workspace" class="workspace" data-mobile-tab="build">
+      <aside id="build-dock" class="dock dock-left" aria-label="Cleanroom Build & Sector Controls"></aside>
+
+      <section id="viewport-stage" class="viewport-stage" aria-label="Isometric Cleanroom Viewport">
+        <div id="cleanroom-viewport" class="cleanroom-viewport"></div>
+
+        <div id="tile-inspector" class="tile-inspector" hidden></div>
+
+        <div id="viewport-controls" class="viewport-controls">
+          <button id="btn-center-cam" type="button" class="btn-chip" title="Center Camera [C]">Center</button>
+          <button id="btn-mobile-crisis" type="button" class="btn-chip btn-crisis-jump" hidden>Crisis Alert</button>
+          <span class="hotkey-hint">[R] Rotate · [C] Center · Right-Click Erase · Drag Pan · Wheel/Pinch Zoom</span>
+        </div>
+
+        <div id="toast-rack" class="toast-rack" aria-live="polite"></div>
+      </section>
+
+      <aside id="crisis-dock" class="dock dock-right" aria-label="Operations & Crisis Mitigation"></aside>
+    </main>
+
+    <nav id="mobile-dock-tabs" class="mobile-dock-tabs" aria-label="Deck Panels">
+      <button type="button" class="mobile-tab-btn is-active" data-mobile-pane="build">Build</button>
+      <button type="button" class="mobile-tab-btn" data-mobile-pane="sectors">Sectors</button>
+      <button type="button" class="mobile-tab-btn" data-mobile-pane="ops">Ops &amp; Alerts</button>
+      <button type="button" class="mobile-tab-btn" data-mobile-pane="canvas">Full Grid</button>
+    </nav>
+  </div>
+
+  <div id="modal-root" class="modal-root">
+    <div id="prestige-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="prestige-modal-title" hidden></div>
+    <div id="blueprint-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="blueprint-modal-title" hidden></div>
+    <div id="offline-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="offline-modal-title" hidden></div>
+  </div>
+
+  <script src="./vendor/phaser.min.js"></script>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
