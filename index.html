@@ -26,6 +26,7 @@
 
         <div id="viewport-controls" class="viewport-controls">
           <button id="btn-center-cam" type="button" class="btn-chip" title="Center Camera [C]">Center</button>
+          <button id="btn-paint-mode" type="button" class="btn-chip" title="Toggle 1-finger drag-painting on tablet">Mode: Pan</button>
           <span id="fps-telemetry-pill" class="btn-chip num" title="Rolling 120-frame requestAnimationFrame rate">60.0 FPS (120f)</span>
           <span id="sw-telemetry-pill" class="btn-chip num" title="PWA Service Worker lifecycle state">SW: boot</span>
           <button id="btn-mobile-crisis" type="button" class="btn-chip btn-crisis-jump" hidden>Crisis Alert</button>
@@ -44,12 +45,21 @@
       <button type="button" class="mobile-tab-btn" data-mobile-pane="ops">Ops &amp; Alerts</button>
       <button type="button" class="mobile-tab-btn" data-mobile-pane="canvas">Full Grid</button>
     </nav>
+
+    <div id="transition-curtain" class="transition-curtain" aria-hidden="true">
+      <div class="curtain-door is-left"></div>
+      <div class="curtain-door is-right"></div>
+      <div class="curtain-scanline"></div>
+    </div>
+    <div id="celebration-banner" class="celebration-banner" aria-live="polite" hidden></div>
   </div>
 
   <div id="modal-root" class="modal-root">
     <div id="prestige-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="prestige-modal-title" hidden></div>
     <div id="blueprint-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="blueprint-modal-title" hidden></div>
     <div id="offline-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="offline-modal-title" hidden></div>
+    <div id="levels-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="levels-modal-title" hidden></div>
+    <div id="secret-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="secret-modal-title" hidden></div>
   </div>
 
   <script src="./vendor/phaser.min.js"></script>

@@ -60,9 +60,23 @@ export function createHudController({ hudEl, dailyBannerEl, callbacks }) {
   hudEl.replaceChildren();
 
   const brandWrap = createEl('div', 'hud-brand');
-  const brandMark = createEl('div', 'brand-mark');
+  const brandMark = createEl('button', 'brand-mark');
+  brandMark.type = 'button';
+  brandMark.id = 'brand-secret-trigger';
+  brandMark.title = 'Swarm Tycoon: Silicon Foundry';
   brandMark.appendChild(createEl('span', 'brand-dot'));
   brandMark.appendChild(createEl('span', '', 'SILICON FOUNDRY'));
+  let secretTapTimer = null;
+  brandMark.addEventListener('click', () => {
+    brandMark.classList.remove('is-secret-tap');
+    void brandMark.offsetWidth;
+    brandMark.classList.add('is-secret-tap');
+    clearTimeout(secretTapTimer);
+    secretTapTimer = setTimeout(() => {
+      brandMark.classList.remove('is-secret-tap');
+    }, 220);
+    callbacks.onTapSecretBrand?.();
+  });
   const tierPill = createEl('span', 'tier-pill', 'T01 · 8×8');
   brandWrap.append(brandMark, tierPill);
 
@@ -107,6 +121,17 @@ export function createHudController({ hudEl, dailyBannerEl, callbacks }) {
   tierBtn.type = 'button';
   tierBtn.id = 'btn-upgrade-tier';
   tierBtn.addEventListener('click', () => callbacks.onUpgradeTier?.());
+
+  const levelsBtn = createEl('button', 'hud-btn', 'Expeditions 0/24');
+  levelsBtn.type = 'button';
+  levelsBtn.id = 'btn-open-levels';
+  levelsBtn.addEventListener('click', () => callbacks.onOpenLevels?.());
+
+  const secretBtn = createEl('button', 'hud-btn is-secret-unlocked', '★ Laser Arcade');
+  secretBtn.type = 'button';
+  secretBtn.id = 'btn-secret-arcade';
+  secretBtn.hidden = true;
+  secretBtn.addEventListener('click', () => callbacks.onOpenSecretArcade?.());
 
   const dailyBtn = createEl('button', 'hud-btn', 'Reset Daily');
   dailyBtn.type = 'button';
@@ -169,6 +194,8 @@ export function createHudController({ hudEl, dailyBannerEl, callbacks }) {
   controlsWrap.append(
     heatmapGroup,
     tierBtn,
+    levelsBtn,
+    secretBtn,
     dailyBtn,
     blueprintBtn,
     prestigeBtn,
@@ -179,7 +206,7 @@ export function createHudController({ hudEl, dailyBannerEl, callbacks }) {
 
   hudEl.append(brandWrap, telemetryWrap, controlsWrap);
 
-  // Build Daily Mode status banner
+  // Build Daily / Contract Sandbox status banner
   dailyBannerEl.replaceChildren();
   const dailyInfo = createEl('div', 'daily-info');
   const dailySeedBadge = createEl('span', 'daily-badge', 'DAILY SEED');
@@ -197,7 +224,13 @@ export function createHudController({ hudEl, dailyBannerEl, callbacks }) {
   const exitDailyBtn = createEl('button', 'hud-btn is-daily-active', 'Exit Daily');
   exitDailyBtn.type = 'button';
   exitDailyBtn.id = 'btn-exit-daily';
-  exitDailyBtn.addEventListener('click', () => callbacks.onExitDaily?.());
+  exitDailyBtn.addEventListener('click', () => {
+    if (callbacks.onExitSandbox) {
+      callbacks.onExitSandbox();
+    } else {
+      callbacks.onExitDaily?.();
+    }
+  });
 
   dailyActions.append(dailyTimerPill, dailyScorePill, dailyBragBtn, exitDailyBtn);
   dailyBannerEl.append(dailyInfo, dailyActions);
@@ -206,15 +239,23 @@ export function createHudController({ hudEl, dailyBannerEl, callbacks }) {
     const econ = snapshot.economy;
     const sim = snapshot.sim || {};
     const daily = snapshot.daily || { active: false };
+    const level = snapshot.level || { active: false };
+    const exp = snapshot.expedition || { clearedCount: 0, totalNodes: 24, secretUnlocked: false };
     const vaultStatus = snapshot.vaultStatus || {};
     const audioState = snapshot.audioState || { volume: 0.6, muted: false };
     const installPrompt = snapshot.installPrompt || { available: false, dismissed: false, installed: false };
 
     const gridW = snapshot.gridWidth || econ.tierSpec?.gridSize || 8;
-    const tierTag = daily.active
-      ? `DAILY · ${gridW}×${gridW}`
-      : `${econ.tierSpec?.shortName || `T0${econ.tier}`} · ${gridW}×${gridW}`;
+    const tierTag = level.active
+      ? `CONTRACT ${level.code || ''} · ${gridW}×${gridW}`
+      : daily.active
+        ? `DAILY · ${gridW}×${gridW}`
+        : `${econ.tierSpec?.shortName || `T0${econ.tier}`} · ${gridW}×${gridW}`;
     setText(tierPill, tierTag);
+
+    setText(levelsBtn, `Expeditions ${exp.clearedCount || 0}/${exp.totalNodes || 24}`);
+    levelsBtn.classList.toggle('is-daily-active', Boolean(level.active));
+    secretBtn.hidden = !Boolean(exp.secretUnlocked);
 
     // Counters (all tabular-nums)
     setText(mDies.val, bsFormat(econ.dies));
@@ -270,6 +311,10 @@ export function createHudController({ hudEl, dailyBannerEl, callbacks }) {
       setText(tierBtn, 'Tier Locked (Daily)');
       tierBtn.disabled = true;
       tierBtn.classList.remove('is-ready');
+    } else if (level.active) {
+      setText(tierBtn, 'Tier Locked (Contract)');
+      tierBtn.disabled = true;
+      tierBtn.classList.remove('is-ready');
     } else if (!econ.nextTierSpec) {
       setText(tierBtn, 'MAX TIER 06');
       tierBtn.disabled = true;
@@ -283,18 +328,42 @@ export function createHudController({ hudEl, dailyBannerEl, callbacks }) {
       tierBtn.classList.toggle('is-ready', Boolean(econ.canUpgradeTier));
     }
 
-    // Daily button & banner
+    // Daily & Expedition Contract banner
     setText(dailyBtn, daily.active ? 'Restart Daily' : 'Reset Daily');
     dailyBtn.classList.toggle('is-daily-active', Boolean(daily.active));
 
-    dailyBannerEl.hidden = !daily.active;
-    if (daily.active) {
+    const showSandboxBanner = Boolean(daily.active || level.active);
+    dailyBannerEl.hidden = !showSandboxBanner;
+    dailyBannerEl.classList.toggle('is-contract-mode', Boolean(level.active));
+
+    if (level.active) {
+      setText(dailySeedBadge, `CONTRACT ${level.code || 'N01'}`);
+      const m = level.modifiers || {};
+      setText(
+        dailyModsText,
+        `${level.title || ''} · ${level.gridSize || gridW}×${level.gridSize || gridW} · Power ×${(m.powerMult ?? 1).toFixed(2)} · Ambient ${m.ambientK ?? 295}K`
+      );
+      dailyTimerPill.hidden = false;
+      setText(
+        dailyTimerPill,
+        `Reward +${bsFormat(level.bonusDies || 0, 'Dies')} · +${level.bonusShards || 0}S`
+      );
+      const banked = Math.max(0, Number(level.vaultedGood) || 0);
+      const goal = Math.max(1, Number(level.waferGoal) || 1);
+      setText(
+        dailyScorePill,
+        `${banked} / ${goal} Wafers${level.clearedThisRun ? ' · ★ CLEARED' : ''}`
+      );
+      dailyBragBtn.hidden = true;
+      setText(exitDailyBtn, 'Exit to Campaign');
+    } else if (daily.active) {
       setText(dailySeedBadge, `DAILY ${daily.seedId || ''}`);
       const m = daily.modifiers || {};
       setText(
         dailyModsText,
         `Power ×${(m.powerMult ?? 1).toFixed(2)} · Ambient ${m.ambientK ?? 295}K · Defect +${Math.round((m.defectBias ?? 0) * 100)}%`
       );
+      dailyTimerPill.hidden = false;
       setText(
         dailyTimerPill,
         daily.finished ? '00:00 DONE' : `T-${formatTimerSec(daily.remainingSec)}`
@@ -303,6 +372,8 @@ export function createHudController({ hudEl, dailyBannerEl, callbacks }) {
         dailyScorePill,
         `Score: ${daily.score || 0} (Target ${m.targetScore || 0} · Best ${daily.bestScore || 0})`
       );
+      dailyBragBtn.hidden = false;
+      setText(exitDailyBtn, 'Exit Daily');
     }
 
     // Prestige button

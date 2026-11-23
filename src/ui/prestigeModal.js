@@ -24,6 +24,7 @@ export function createPrestigeModal({ modalEl, callbacks }) {
   let isModalOpen = false;
   let rewriteArmed = false;
   let armTimer = null;
+  const prevLevels = new Array(PRESTIGE_NODES.length).fill(-1);
 
   const card = createEl('div', 'modal-card');
   const header = createEl('div', 'modal-header');
@@ -89,7 +90,7 @@ export function createPrestigeModal({ modalEl, callbacks }) {
 
       nCard.append(nHead, effect, satire, buyBtn);
       nodesWrap.appendChild(nCard);
-      nodeViews[node.id] = { card: nCard, lvl, buyBtn };
+      nodeViews[node.id] = { card: nCard, lvl, buyBtn, popTimer: null };
     }
 
     branchCol.appendChild(nodesWrap);
@@ -138,6 +139,7 @@ export function createPrestigeModal({ modalEl, callbacks }) {
   function close() {
     if (!isModalOpen) return;
     isModalOpen = false;
+    prevLevels.fill(-1);
     resetArm();
     modalEl.hidden = true;
     callbacks.onClose?.();
@@ -150,15 +152,24 @@ export function createPrestigeModal({ modalEl, callbacks }) {
 
   function open(snapshot) {
     isModalOpen = true;
+    prevLevels.fill(-1);
     resetArm();
     modalEl.hidden = false;
-    if (snapshot) update(snapshot);
+    if (snapshot) {
+      const levels = snapshot.economy?.prestigeLevels || [];
+      for (let i = 0; i < PRESTIGE_NODES.length; i++) {
+        prevLevels[i] = levels[i] || 0;
+      }
+      update(snapshot);
+    }
   }
 
   function update(snapshot) {
     if (!isModalOpen) return;
     const econ = snapshot.economy;
     const dailyActive = Boolean(snapshot.daily?.active);
+    const levelActive = Boolean(snapshot.level?.active);
+    const sandboxActive = dailyActive || levelActive;
     const levels = econ.prestigeLevels || [];
     const effects = getPrestigeEffects(levels);
 
@@ -166,20 +177,36 @@ export function createPrestigeModal({ modalEl, callbacks }) {
     statShards.textContent = String(econ.shards || 0);
     statPending.textContent = `+${econ.pendingShards || 0}`;
     statScram.textContent = `${effects.scramCeilingK} K`;
-    dailyWarn.hidden = !dailyActive;
+    dailyWarn.hidden = !sandboxActive;
+    if (levelActive) {
+      dailyWarn.textContent = 'Expedition Contract isolation active — Exit to Campaign before executing an Architecture Rewrite.';
+    } else if (dailyActive) {
+      dailyWarn.textContent = 'Daily Challenge isolation active — Exit Daily Mode before executing an Architecture Rewrite.';
+    }
 
     for (let i = 0; i < PRESTIGE_NODES.length; i++) {
       const nv = nodeViews[i];
       const lvl = levels[i] || 0;
       const cost = getNodeCost(i, lvl);
+      if (prevLevels[i] >= 0 && lvl > prevLevels[i]) {
+        nv.card.classList.remove('is-upgraded-pop');
+        void nv.card.offsetWidth;
+        nv.card.classList.add('is-upgraded-pop');
+        clearTimeout(nv.popTimer);
+        nv.popTimer = setTimeout(() => {
+          nv.card.classList.remove('is-upgraded-pop');
+        }, 450);
+      }
+      prevLevels[i] = lvl;
+
       nv.lvl.textContent = `Lv.${lvl}`;
       nv.card.classList.toggle('is-owned', lvl > 0);
       nv.buyBtn.textContent = `Upgrade (${cost} ${cost === 1 ? 'Shard' : 'Shards'})`;
-      nv.buyBtn.disabled = dailyActive || (econ.shards || 0) < cost;
+      nv.buyBtn.disabled = sandboxActive || (econ.shards || 0) < cost;
     }
 
     const pend = econ.pendingShards || 0;
-    rewriteBtn.disabled = dailyActive || pend <= 0;
+    rewriteBtn.disabled = sandboxActive || pend <= 0;
     if (!rewriteArmed) {
       rewriteBtn.textContent = `Execute Architecture Rewrite (+${pend} ${pend === 1 ? 'Shard' : 'Shards'})`;
     }

@@ -17,9 +17,15 @@ import {
   generateDailyChallenge,
   todayUtcStr,
 } from './sim/dailySeedGenerator.js';
+import {
+  LEVEL_POOL,
+  buildLevelChallenge,
+  pickNextUnseenLevel,
+  drawNextQuip,
+} from './sim/levelPool.js';
 import { createCleanroomGame } from './render/isoScene.js';
 import { EconomyEngine } from './economy/yieldCurves.js';
-import { bsAdd, bsCmp, bsFrom, bsSubClamped, bsZero } from './economy/bigSilicon.js';
+import { bsAdd, bsCmp, bsFormat, bsFrom, bsSanitize, bsSubClamped, bsZero } from './economy/bigSilicon.js';
 import { getTierSpec } from './economy/scaleTiers.js';
 import { AGENT_CATALOG } from './economy/agentWorkers.js';
 import { rollCrisis } from './economy/chaosIncidents.js';
@@ -34,18 +40,22 @@ import { createPrestigeModal } from './ui/prestigeModal.js';
 import { createCrisisTicker } from './ui/crisisTicker.js';
 import { createBlueprintModal } from './ui/blueprintModal.js';
 import { createOfflineReportModal } from './ui/offlineReportModal.js';
+import { createLevelsModal } from './ui/levelsModal.js';
+import { createSecretMinigameModal } from './ui/secretMinigameModal.js';
 
 const AUTOSAVE_INTERVAL_MS = 5000;
 const WAFER_NAMES = ['NONE', 'RAW', 'COATED', 'EXPOSED', 'ETCHED', 'GOOD'];
 const DIR_CHARS = ['N', 'E', 'S', 'W'];
 
-const SATIRICAL_TICKER_QUIPS = [
-  'Series C pitch deck automatically inflated wafer projections by 400%.',
-  'Facilities memo: LN2 mist in Hallway B counts as "immersive cloud compute".',
-  'EUV mirror alignment certified to within three investor metaphors.',
-  'Sub-nanometer tolerances maintained via aggressive rounding in quarterly slides.',
-  'Overhead FOUP shuttle requested a seat on the compensation committee.',
-];
+function popcount24(mask) {
+  let v = (Number(mask) | 0) & 0xffffff;
+  let count = 0;
+  while (v !== 0) {
+    v &= v - 1;
+    count++;
+  }
+  return count;
+}
 
 function createFallbackAudioEngine() {
   let volume = 0.6;
@@ -75,6 +85,9 @@ function createFallbackAudioEngine() {
     playEuvFlash() {},
     playShuttleLaunch() {},
     playPrestigeSwell() {},
+    playCelebrationFanfare() {},
+    playTransitionWhoosh() {},
+    playNodeUnlockPop() {},
     playKlaxon() {},
   };
 }
@@ -141,10 +154,109 @@ function registerServiceWorker(onStateChange) {
     .catch(() => {});
 }
 
-function setupDailyCleanroom(gridEngine, challenge) {
+function dirBetween(ax, ay, bx, by) {
+  if (by < ay) return DIRS.N;
+  if (bx > ax) return DIRS.E;
+  if (by > ay) return DIRS.S;
+  return DIRS.W;
+}
+
+function findStarterPipeline(w, isPillar) {
+  const isBlocked = (x, y) =>
+    x < 0 ||
+    x >= w ||
+    y < 0 ||
+    y >= w ||
+    (x === 0 && y === 0) ||
+    (x === 1 && y === 0) ||
+    (x === 0 && y === 1) ||
+    isPillar(x, y);
+
+  // 1. Prefer 6-tile horizontal line with open RECLAIM_GRINDER slot beside QA
+  for (const requireGrinder of [true, false]) {
+    for (let y = 2; y <= w - 1; y++) {
+      for (let x = 0; x <= w - 6; x++) {
+        let clear = true;
+        for (let dx = 0; dx < 6; dx++) {
+          if (isBlocked(x + dx, y)) {
+            clear = false;
+            break;
+          }
+        }
+        if (!clear) continue;
+        if (!requireGrinder || !isBlocked(x + 4, y + 1)) {
+          return Array.from({ length: 6 }, (_, i) => ({ x: x + i, y }));
+        }
+        if (!isBlocked(x + 1, y - 1)) {
+          return Array.from({ length: 6 }, (_, i) => ({ x: x + 5 - i, y }));
+        }
+      }
+    }
+  }
+
+  // 2. Try 6-tile vertical line going South
+  for (let x = 1; x < w; x++) {
+    for (let y = 1; y <= w - 6; y++) {
+      let clear = true;
+      for (let dy = 0; dy < 6; dy++) {
+        if (isBlocked(x, y + dy)) {
+          clear = false;
+          break;
+        }
+      }
+      if (clear) {
+        return Array.from({ length: 6 }, (_, i) => ({ x, y: y + i }));
+      }
+    }
+  }
+
+  // 3. General DFS fallback for any simple 6-tile cardinal chain around dense pillars
+  const dxs = [1, 0, -1, 0];
+  const dys = [0, 1, 0, -1];
+  const used = new Uint8Array(w * w);
+  const path = [];
+
+  function dfs(cx, cy) {
+    if (path.length === 6) {
+      const qaDir = dirBetween(path[4].x, path[4].y, path[5].x, path[5].y);
+      const enterDir = dirBetween(path[3].x, path[3].y, path[4].x, path[4].y);
+      const enterSide = (enterDir + 2) & 3;
+      return enterSide !== ((qaDir + 1) & 3);
+    }
+    for (let d = 0; d < 4; d++) {
+      const nx = cx + dxs[d];
+      const ny = cy + dys[d];
+      if (isBlocked(nx, ny)) continue;
+      const idx = ny * w + nx;
+      if (used[idx]) continue;
+      used[idx] = 1;
+      path.push({ x: nx, y: ny });
+      if (dfs(nx, ny)) return true;
+      path.pop();
+      used[idx] = 0;
+    }
+    return false;
+  }
+
+  for (let sy = 1; sy < w; sy++) {
+    for (let sx = 0; sx < w; sx++) {
+      if (isBlocked(sx, sy)) continue;
+      const idx = sy * w + sx;
+      used[idx] = 1;
+      path.push({ x: sx, y: sy });
+      if (dfs(sx, sy)) return path;
+      path.pop();
+      used[idx] = 0;
+    }
+  }
+  return null;
+}
+
+function setupSandboxCleanroom(gridEngine, challenge) {
+  const tier = Math.max(1, Math.min(6, Number(challenge.tier) || 2));
   gridEngine.importLayoutSnapshot({
     gridSize: challenge.gridSize,
-    tier: 2,
+    tier,
     agents: [-1, -1, -1, -1],
     cells: new Array(challenge.gridSize * challenge.gridSize).fill(null).map(() => ({
       machineType: 0,
@@ -157,7 +269,7 @@ function setupDailyCleanroom(gridEngine, challenge) {
   });
   gridEngine.applyDailyPillars(challenge.pillars);
 
-  // Guaranteed open anchors from dailySeedGenerator: (0,0), (1,0), (0,1), (11,11)
+  // Guaranteed open anchors: (0,0), (1,0), (0,1), (w-1,w-1)
   gridEngine.placeMachine(1, 0, MACHINE_TYPES.POWER_SOURCE, DIRS.E, 0);
   gridEngine.placeMachine(0, 1, MACHINE_TYPES.CRYO_CHILLER, DIRS.S, 0);
   gridEngine.toggleBusbar(0, 0, true);
@@ -165,84 +277,91 @@ function setupDailyCleanroom(gridEngine, challenge) {
   gridEngine.toggleBusbar(0, 1, true);
   gridEngine.togglePipe(0, 1, true);
 
-  // Find a 6-tile open horizontal line to seed an active starter loop around today's pillars
   const w = challenge.gridSize;
   const st = gridEngine.state;
   const isPillar = (x, y) => st.machineType[y * w + x] === MACHINE_TYPES.PILLAR;
+  const chain = findStarterPipeline(w, isPillar);
 
-  let placedStarter = false;
-  for (let y = 2; y <= w - 2 && !placedStarter; y++) {
-    for (let x = 0; x <= w - 6 && !placedStarter; x++) {
-      let clear = true;
-      for (let dx = 0; dx < 6; dx++) {
-        if (isPillar(x + dx, y)) {
-          clear = false;
-          break;
+  if (chain && chain.length === 6) {
+    const pipelineTypes = [
+      MACHINE_TYPES.INGOT_SLICER,
+      MACHINE_TYPES.PHOTORESIST_COATER,
+      MACHINE_TYPES.EUV_SCANNER,
+      MACHINE_TYPES.PLASMA_ETCHER,
+      MACHINE_TYPES.METROLOGY_QA,
+      MACHINE_TYPES.WAFER_VAULT,
+    ];
+
+    let qaDir = DIRS.E;
+    for (let i = 0; i < 6; i++) {
+      const cur = chain[i];
+      const d = i < 5
+        ? dirBetween(cur.x, cur.y, chain[i + 1].x, chain[i + 1].y)
+        : dirBetween(chain[4].x, chain[4].y, chain[5].x, chain[5].y);
+      if (i === 4) qaDir = d;
+      gridEngine.placeMachine(cur.x, cur.y, pipelineTypes[i], d);
+      gridEngine.togglePipe(cur.x, cur.y, true);
+      gridEngine.toggleBusbar(cur.x, cur.y, true);
+    }
+
+    const dxs = [0, 1, 0, -1];
+    const dys = [-1, 0, 1, 0];
+    const rightDir = (qaDir + 1) & 3;
+    const gx = chain[4].x + dxs[rightDir];
+    const gy = chain[4].y + dys[rightDir];
+    if (
+      gx >= 0 &&
+      gx < w &&
+      gy >= 0 &&
+      gy < w &&
+      !isPillar(gx, gy) &&
+      st.machineType[gy * w + gx] === MACHINE_TYPES.EMPTY
+    ) {
+      gridEngine.placeMachine(gx, gy, MACHINE_TYPES.RECLAIM_GRINDER, (rightDir + 2) & 3);
+      gridEngine.togglePipe(gx, gy, true);
+      gridEngine.toggleBusbar(gx, gy, true);
+    }
+
+    // BFS cryo & power link from (0, 1) to chain[0] around any pillars
+    const startIdx = 1 * w + 0;
+    const targetIdx = chain[0].y * w + chain[0].x;
+    const visited = new Uint8Array(w * w);
+    const parent = new Int16Array(w * w).fill(-1);
+    const queue = [startIdx];
+    visited[startIdx] = 1;
+    let head = 0;
+    let found = false;
+
+    while (head < queue.length) {
+      const cur = queue[head++];
+      if (cur === targetIdx) {
+        found = true;
+        break;
+      }
+      const cx = cur % w;
+      const cy = (cur / w) | 0;
+      for (let d = 0; d < 4; d++) {
+        const nx = cx + dxs[d];
+        const ny = cy + dys[d];
+        if (nx < 0 || nx >= w || ny < 0 || ny >= w) continue;
+        const nIdx = ny * w + nx;
+        if (!visited[nIdx] && !isPillar(nx, ny)) {
+          visited[nIdx] = 1;
+          parent[nIdx] = cur;
+          queue.push(nIdx);
         }
       }
-      if (!clear) continue;
+    }
 
-      gridEngine.placeMachine(x, y, MACHINE_TYPES.INGOT_SLICER, DIRS.E);
-      gridEngine.placeMachine(x + 1, y, MACHINE_TYPES.PHOTORESIST_COATER, DIRS.E);
-      gridEngine.placeMachine(x + 2, y, MACHINE_TYPES.EUV_SCANNER, DIRS.E);
-      gridEngine.placeMachine(x + 3, y, MACHINE_TYPES.PLASMA_ETCHER, DIRS.E);
-      gridEngine.placeMachine(x + 4, y, MACHINE_TYPES.METROLOGY_QA, DIRS.E);
-      gridEngine.placeMachine(x + 5, y, MACHINE_TYPES.WAFER_VAULT, DIRS.E);
-      if (!isPillar(x + 4, y + 1)) {
-        gridEngine.placeMachine(x + 4, y + 1, MACHINE_TYPES.RECLAIM_GRINDER, DIRS.N);
-        gridEngine.togglePipe(x + 4, y + 1, true);
-        gridEngine.toggleBusbar(x + 4, y + 1, true);
+    if (found) {
+      let trace = targetIdx;
+      while (trace !== -1) {
+        const tx = trace % w;
+        const ty = (trace / w) | 0;
+        gridEngine.togglePipe(tx, ty, true);
+        gridEngine.toggleBusbar(tx, ty, true);
+        trace = parent[trace];
       }
-
-      // Connect cryo & power along row y and BFS back to (0,1) around any pillars
-      for (let px = x; px <= x + 5; px++) {
-        gridEngine.togglePipe(px, y, true);
-        gridEngine.toggleBusbar(px, y, true);
-      }
-
-      const startIdx = 1 * w + 0; // (0, 1)
-      const targetIdx = y * w + x;
-      const visited = new Uint8Array(w * w);
-      const parent = new Int16Array(w * w).fill(-1);
-      const queue = [startIdx];
-      visited[startIdx] = 1;
-      let head = 0;
-      let found = false;
-      const dxs = [0, 1, 0, -1];
-      const dys = [-1, 0, 1, 0];
-
-      while (head < queue.length) {
-        const cur = queue[head++];
-        if (cur === targetIdx) {
-          found = true;
-          break;
-        }
-        const cx = cur % w;
-        const cy = (cur / w) | 0;
-        for (let d = 0; d < 4; d++) {
-          const nx = cx + dxs[d];
-          const ny = cy + dys[d];
-          if (nx < 0 || nx >= w || ny < 0 || ny >= w) continue;
-          const nIdx = ny * w + nx;
-          if (!visited[nIdx] && !isPillar(nx, ny)) {
-            visited[nIdx] = 1;
-            parent[nIdx] = cur;
-            queue.push(nIdx);
-          }
-        }
-      }
-
-      if (found) {
-        let trace = targetIdx;
-        while (trace !== -1) {
-          const tx = trace % w;
-          const ty = (trace / w) | 0;
-          gridEngine.togglePipe(tx, ty, true);
-          gridEngine.toggleBusbar(tx, ty, true);
-          trace = parent[trace];
-        }
-      }
-      placedStarter = true;
     }
   }
 }
@@ -257,6 +376,9 @@ async function bootCommandDeck() {
   const inspectorEl = document.getElementById('tile-inspector');
   const toastRackEl = document.getElementById('toast-rack');
   const centerCamBtn = document.getElementById('btn-center-cam');
+  const paintModeBtn = document.getElementById('btn-paint-mode');
+  const transitionCurtainEl = document.getElementById('transition-curtain');
+  const celebrationBannerEl = document.getElementById('celebration-banner');
   const fpsPillEl = document.getElementById('fps-telemetry-pill');
   const swPillEl = document.getElementById('sw-telemetry-pill');
   const mobileCrisisBtn = document.getElementById('btn-mobile-crisis');
@@ -274,6 +396,8 @@ async function bootCommandDeck() {
   const prestigeModalEl = document.getElementById('prestige-modal');
   const blueprintModalEl = document.getElementById('blueprint-modal');
   const offlineModalEl = document.getElementById('offline-modal');
+  const levelsModalEl = document.getElementById('levels-modal');
+  const secretModalEl = document.getElementById('secret-modal');
 
   const vault = new CookieVault();
   const gridEngine = new GridEngine(8, 'CAMPAIGN');
@@ -294,6 +418,30 @@ async function bootCommandDeck() {
   let lastShuttleSfxMs = 0;
   let prevShuttleCount = 0;
   let lastQuipSec = 0;
+  let quipBagState = null;
+  let crisesMitigated = 0;
+  let brandTapTimestamps = [];
+  let airlockTimer = null;
+  let celebrationTimer = null;
+
+  /** @type {'campaign' | 'daily' | 'level'} */
+  let sandboxMode = 'campaign';
+  let sandboxBackup = null;
+
+  const expeditionState = {
+    clearedMask: 0,
+    bagMask: 0,
+    secretUnlocked: false,
+    secretBest: 0,
+  };
+
+  const levelState = {
+    active: false,
+    challenge: null,
+    startVaultedGood: 0,
+    elapsedSec: 0,
+    clearedThisRun: false,
+  };
 
   const toolState = {
     toolId: MACHINE_TYPES.BELT_STRAIGHT,
@@ -336,7 +484,6 @@ async function bootCommandDeck() {
     score: 0,
     bestScore: 0,
     finished: false,
-    campaignBackup: null,
   };
 
   function showToast(message, level = 'info') {
@@ -348,6 +495,74 @@ async function bootCommandDeck() {
     setTimeout(() => {
       toast.remove();
     }, 3200);
+  }
+
+  function triggerAirlockTransition() {
+    audioEngine.playTransitionWhoosh?.();
+    if (!transitionCurtainEl) return;
+    transitionCurtainEl.classList.remove('is-active');
+    void transitionCurtainEl.offsetWidth;
+    transitionCurtainEl.classList.add('is-active');
+    clearTimeout(airlockTimer);
+    airlockTimer = setTimeout(() => {
+      transitionCurtainEl.classList.remove('is-active');
+    }, 440);
+  }
+
+  function celebrateMilestone({ title, subtitle = '', rewardText = '', intensity = 1, withAirlock = false }) {
+    renderer?.triggerCelebrationVfx?.(intensity);
+    audioEngine.playCelebrationFanfare?.(intensity);
+    if (withAirlock) {
+      triggerAirlockTransition();
+    }
+    if (!celebrationBannerEl) return;
+
+    celebrationBannerEl.replaceChildren();
+    const titleEl = document.createElement('div');
+    titleEl.className = 'celebration-title';
+    titleEl.textContent = String(title || 'MILESTONE!');
+    celebrationBannerEl.appendChild(titleEl);
+
+    if (subtitle) {
+      const subEl = document.createElement('div');
+      subEl.className = 'celebration-sub';
+      subEl.textContent = String(subtitle);
+      celebrationBannerEl.appendChild(subEl);
+    }
+
+    if (rewardText) {
+      const rewEl = document.createElement('div');
+      rewEl.className = 'celebration-reward num';
+      rewEl.textContent = String(rewardText);
+      celebrationBannerEl.appendChild(rewEl);
+    }
+
+    celebrationBannerEl.hidden = false;
+    celebrationBannerEl.classList.remove('is-popping');
+    void celebrationBannerEl.offsetWidth;
+    celebrationBannerEl.classList.add('is-popping');
+
+    clearTimeout(celebrationTimer);
+    celebrationTimer = setTimeout(() => {
+      celebrationBannerEl.classList.remove('is-popping');
+      celebrationBannerEl.hidden = true;
+    }, 2200);
+  }
+
+  function getCampaignTier() {
+    return sandboxMode !== 'campaign' && sandboxBackup
+      ? Number(sandboxBackup.econState?.tier) || 1
+      : economyEngine.tier;
+  }
+
+  function ensureCampaignBackup() {
+    if (sandboxMode === 'campaign' && !sandboxBackup) {
+      forceSave();
+      sandboxBackup = {
+        econState: economyEngine.exportState(),
+        layout: gridEngine.exportLayoutSnapshot(),
+      };
+    }
   }
 
   function syncAgentsToGrid() {
@@ -378,6 +593,12 @@ async function bootCommandDeck() {
         vol: Number.isFinite(audioSt.volume) ? audioSt.volume : 0.6,
         mute: Boolean(audioSt.muted),
       },
+      expedition: {
+        clearedMask: expeditionState.clearedMask & 0xffffff,
+        bagMask: expeditionState.bagMask & 0xffffff,
+        secretUnlocked: Boolean(expeditionState.secretUnlocked),
+        secretBest: Math.max(0, Math.floor(Number(expeditionState.secretBest) || 0)),
+      },
       layout,
     };
   }
@@ -396,9 +617,12 @@ async function bootCommandDeck() {
   }
 
   function forceSave() {
-    if (dailyState.active) {
+    if (sandboxMode === 'daily') {
       const ok = saveDailyProgress();
       return { ok, mode: 'daily', cookieBytes: vaultStatus.cookieBytes, primaryBytes: vaultStatus.primaryBytes };
+    }
+    if (sandboxMode === 'level') {
+      return { ok: true, mode: 'level', cookieBytes: vaultStatus.cookieBytes, primaryBytes: vaultStatus.primaryBytes };
     }
     const res = vault.saveCampaign(buildCampaignSavePayload(), Date.now());
     vaultStatus.cookieBytes = res.cookieBytes;
@@ -425,6 +649,10 @@ async function bootCommandDeck() {
       totalBackpressure: 0,
     };
 
+    const levelVaultedGood = levelState.active
+      ? Math.max(0, gridEngine.state.vaultedGood - levelState.startVaultedGood)
+      : 0;
+
     return {
       economy: econ,
       sim,
@@ -435,6 +663,15 @@ async function bootCommandDeck() {
       vaultStatus: { ...vaultStatus },
       audioState: audioEngine.getState(),
       installPrompt: { ...installState },
+      expedition: {
+        clearedMask: expeditionState.clearedMask,
+        bagMask: expeditionState.bagMask,
+        clearedCount: popcount24(expeditionState.clearedMask),
+        totalNodes: LEVEL_POOL.length,
+        secretUnlocked: Boolean(expeditionState.secretUnlocked),
+        secretBest: expeditionState.secretBest,
+        unlockedTier: Math.max(2, getCampaignTier()),
+      },
       daily: {
         active: dailyState.active,
         seedId: dailyState.seedId,
@@ -445,6 +682,21 @@ async function bootCommandDeck() {
         bestScore: dailyState.bestScore,
         modifiers: dailyState.challenge?.modifiers || null,
         finished: dailyState.finished,
+      },
+      level: {
+        active: levelState.active,
+        id: levelState.challenge?.id ?? -1,
+        code: levelState.challenge?.code || '',
+        title: levelState.challenge?.title || '',
+        subtitle: levelState.challenge?.subtitle || '',
+        gridSize: levelState.challenge?.gridSize || gridEngine.state.width,
+        waferGoal: levelState.challenge?.waferGoal || 0,
+        vaultedGood: levelVaultedGood,
+        bonusDies: levelState.challenge?.bonusDies || 0,
+        bonusShards: levelState.challenge?.bonusShards || 0,
+        modifiers: levelState.challenge?.modifiers || null,
+        elapsedSec: levelState.elapsedSec,
+        clearedThisRun: levelState.clearedThisRun,
       },
     };
   }
@@ -518,6 +770,8 @@ async function bootCommandDeck() {
   let prestigeModal = null;
   let blueprintModal = null;
   let offlineModal = null;
+  let levelsModal = null;
+  let secretMinigameModal = null;
 
   function updateAllUi() {
     const snap = buildUiSnapshot();
@@ -525,6 +779,7 @@ async function bootCommandDeck() {
     buildPalette?.update(snap);
     crisisTicker?.update(snap);
     prestigeModal?.update(snap);
+    levelsModal?.update(snap);
     if (mobileCrisisBtn) {
       mobileCrisisBtn.hidden = !snap.economy.activeCrisis;
     }
@@ -723,7 +978,7 @@ async function bootCommandDeck() {
       return { ok: false, error: decoded.error };
     }
 
-    if (dailyState.active) {
+    if (sandboxMode !== 'campaign') {
       const w = gridEngine.state.width;
       const copyW = Math.min(w, decoded.gridSize);
       for (let y = 0; y < copyW; y++) {
@@ -739,7 +994,7 @@ async function bootCommandDeck() {
       }
       renderer?.syncGridSize();
       updateAllUi();
-      crisisTicker?.pushLog(`Imported ${decoded.gridSize}×${decoded.gridSize} blueprint onto Daily grid (pillars preserved).`, 'gold');
+      crisisTicker?.pushLog(`Imported ${decoded.gridSize}×${decoded.gridSize} blueprint onto sandbox grid (pillars preserved).`, 'gold');
       return { ok: true, gridSize: w, tier: economyEngine.tier };
     }
 
@@ -787,21 +1042,97 @@ async function bootCommandDeck() {
     return { ok: true, gridSize: decoded.gridSize, tier: decoded.tier };
   }
 
+  function checkSecretAutoUnlock() {
+    if (expeditionState.secretUnlocked) return false;
+    const campaignTier = getCampaignTier();
+    const clearedCount = popcount24(expeditionState.clearedMask);
+    if (clearedCount >= 3 || campaignTier >= 3 || crisesMitigated >= 3) {
+      expeditionState.secretUnlocked = true;
+      if (sandboxMode === 'campaign') {
+        forceSave();
+      }
+      crisisTicker?.pushLog('★ SECRET UNLOCKED: Laser Arcade added to Command Deck HUD!', 'gold');
+      showToast('★ Secret Unlocked: Laser Arcade!');
+      updateAllUi();
+      return true;
+    }
+    return false;
+  }
+
+  function handleTapSecretBrand() {
+    audioEngine.unlock();
+    const now = Date.now();
+    brandTapTimestamps = brandTapTimestamps.filter((ts) => now - ts <= 4000);
+    brandTapTimestamps.push(now);
+    const taps = brandTapTimestamps.length;
+
+    if (taps < 5) {
+      audioEngine.playNodeUnlockPop?.(taps);
+      return;
+    }
+
+    brandTapTimestamps = [];
+    const wasUnlocked = expeditionState.secretUnlocked;
+    expeditionState.secretUnlocked = true;
+    if (sandboxMode === 'campaign') {
+      forceSave();
+    }
+    updateAllUi();
+
+    if (!wasUnlocked) {
+      celebrateMilestone({
+        title: 'SECRET ARCADE UNLOCKED!',
+        subtitle: 'Photolithography Laser Defender',
+        intensity: 2.0,
+      });
+      crisisTicker?.pushLog('SECRET DISCOVERY: Photolithography Laser Arcade unlocked!', 'gold');
+    } else {
+      audioEngine.playNodeUnlockPop?.(5);
+    }
+    secretMinigameModal?.open(buildUiSnapshot());
+  }
+
+  function unlockSecretMinigame() {
+    const was = expeditionState.secretUnlocked;
+    expeditionState.secretUnlocked = true;
+    if (sandboxMode === 'campaign') {
+      forceSave();
+    }
+    updateAllUi();
+    if (!was) {
+      celebrateMilestone({
+        title: 'SECRET ARCADE UNLOCKED!',
+        subtitle: 'Photolithography Laser Defender',
+        intensity: 2.0,
+      });
+    }
+    return { ...expeditionState };
+  }
+
+  function openSecretMinigame() {
+    expeditionState.secretUnlocked = true;
+    if (sandboxMode === 'campaign') {
+      forceSave();
+    }
+    updateAllUi();
+    secretMinigameModal?.open(buildUiSnapshot());
+    return true;
+  }
+
   function triggerDailyChallenge(dateStr = todayUtcStr()) {
     audioEngine.unlock();
-    if (!dailyState.active) {
-      // Snapshot active campaign cleanly before switching to isolated Daily sandbox
-      forceSave();
-      dailyState.campaignBackup = {
-        econState: economyEngine.exportState(),
-        layout: gridEngine.exportLayoutSnapshot(),
-      };
+    if (sandboxMode === 'level') {
+      levelState.active = false;
+      levelState.challenge = null;
+      levelState.clearedThisRun = false;
     }
+    ensureCampaignBackup();
 
     const challenge = generateDailyChallenge(dateStr);
     const savedDaily = vault.loadDailyState();
     const prevBest = savedDaily && savedDaily.seedId === challenge.seedId ? Number(savedDaily.bestScore) || 0 : 0;
 
+    sandboxMode = 'daily';
     dailyState.active = true;
     dailyState.challenge = challenge;
     dailyState.seedId = challenge.seedId;
@@ -815,7 +1146,7 @@ async function bootCommandDeck() {
     dailyState.bestScore = prevBest;
     dailyState.finished = false;
 
-    setupDailyCleanroom(gridEngine, challenge);
+    setupSandboxCleanroom(gridEngine, { ...challenge, tier: 2 });
     dailyState.startVaultedGood = gridEngine.state.vaultedGood;
 
     economyEngine.importState({
@@ -836,6 +1167,7 @@ async function bootCommandDeck() {
     lastTelemetry = null;
 
     saveDailyProgress();
+    triggerAirlockTransition();
     renderer?.syncGridSize();
     renderer?.centerCamera();
     updateAllUi();
@@ -847,15 +1179,161 @@ async function bootCommandDeck() {
     return challenge;
   }
 
-  function exitDailyChallenge() {
-    if (!dailyState.active) return false;
-    saveDailyProgress();
+  function launchLevelNode(nodeId, { bypassLock = false } = {}) {
+    audioEngine.unlock();
+    const safeId = Number.isInteger(nodeId)
+      ? Math.max(0, Math.min(LEVEL_POOL.length - 1, nodeId))
+      : 0;
+    const spec = LEVEL_POOL[safeId];
+    if (!bypassLock && spec.tier > Math.max(2, getCampaignTier())) {
+      showToast(`${spec.code} requires Tier 0${spec.tier} cleanroom expansion.`, 'warn');
+      return null;
+    }
 
-    const backup = dailyState.campaignBackup;
-    dailyState.active = false;
-    dailyState.challenge = null;
-    dailyState.campaignBackup = null;
-    dailyState.finished = false;
+    if (sandboxMode === 'daily') {
+      saveDailyProgress();
+      dailyState.active = false;
+      dailyState.challenge = null;
+      dailyState.finished = false;
+    }
+    ensureCampaignBackup();
+
+    const challenge = buildLevelChallenge(safeId);
+    sandboxMode = 'level';
+    levelState.active = true;
+    levelState.challenge = challenge;
+    levelState.elapsedSec = 0;
+    levelState.clearedThisRun = false;
+
+    setupSandboxCleanroom(gridEngine, challenge);
+    levelState.startVaultedGood = gridEngine.state.vaultedGood;
+
+    economyEngine.importState({
+      tier: challenge.tier,
+      dies: bsFrom(Math.max(1500, challenge.tier * 1200)),
+      flops: bsZero(),
+      lifetimeFlops: bsZero(),
+      shards: 0,
+      hwmDiesPerMin: 0,
+      fleetLevel: 1,
+      prestige: new Array(9).fill(0),
+      agents: [-1, -1, -1, -1],
+      entropies: [0, 0, 0, 0],
+      paperclips: 0,
+    });
+    syncAgentsToGrid();
+    wafersPerSecEma = 0;
+    lastTelemetry = null;
+
+    triggerAirlockTransition();
+    renderer?.syncGridSize();
+    renderer?.centerCamera();
+    updateAllUi();
+    crisisTicker?.pushLog(
+      `Contract ${challenge.code} (${challenge.title}) active — Goal: ${challenge.waferGoal} Good Wafers!`,
+      'gold'
+    );
+    showToast(`Contract ${challenge.code}: ${challenge.title}`);
+    return challenge;
+  }
+
+  function launchNextUnseenLevel() {
+    const maxTier = Math.max(2, getCampaignTier());
+    const pick = pickNextUnseenLevel(expeditionState.bagMask, maxTier);
+    expeditionState.bagMask = pick.nextBagMask;
+    if (sandboxMode === 'campaign') {
+      forceSave();
+    }
+    return launchLevelNode(pick.nodeId);
+  }
+
+  function completeActiveLevel() {
+    if (!levelState.active || !levelState.challenge || levelState.clearedThisRun) {
+      return false;
+    }
+    const ch = levelState.challenge;
+    levelState.clearedThisRun = true;
+
+    const isFirstClear = (expeditionState.clearedMask & (1 << ch.id)) === 0;
+    expeditionState.clearedMask = (expeditionState.clearedMask | (1 << ch.id)) & 0xffffff;
+
+    const bonusDiesBig = bsFrom(ch.bonusDies);
+    economyEngine.dies = bsAdd(economyEngine.dies, bonusDiesBig);
+    if (isFirstClear) {
+      economyEngine.shards = (economyEngine.shards || 0) + ch.bonusShards;
+    }
+
+    if (sandboxBackup?.econState) {
+      sandboxBackup.econState.dies = bsAdd(
+        bsSanitize(sandboxBackup.econState.dies),
+        bonusDiesBig
+      );
+      if (isFirstClear) {
+        sandboxBackup.econState.shards =
+          (Number(sandboxBackup.econState.shards) || 0) + ch.bonusShards;
+      }
+    }
+
+    const clearedCount = popcount24(expeditionState.clearedMask);
+    const shardSuffix = isFirstClear
+      ? ` · +${ch.bonusShards} Shard${ch.bonusShards === 1 ? '' : 's'}`
+      : '';
+
+    celebrateMilestone({
+      title: 'CONTRACT CLEARED!',
+      subtitle: `${ch.code} · ${ch.title}`,
+      rewardText: `+${ch.bonusDies} Dies${shardSuffix}`,
+      intensity: 1.8,
+    });
+
+    crisisTicker?.pushLog(
+      `CONTRACT CLEARED: ${ch.code} (${ch.title}) — +${ch.bonusDies} Dies${shardSuffix} (${clearedCount}/24)!`,
+      'good'
+    );
+
+    checkSecretAutoUnlock();
+    updateAllUi();
+    return true;
+  }
+
+  function completeActiveLevelForTest() {
+    if (sandboxMode !== 'level' || !levelState.active || !levelState.challenge) {
+      return { ok: false, reason: 'not_in_level' };
+    }
+    const ch = levelState.challenge;
+    const targetVaulted = levelState.startVaultedGood + ch.waferGoal;
+    if (gridEngine.state.vaultedGood < targetVaulted) {
+      gridEngine.state.vaultedGood = targetVaulted;
+    }
+    completeActiveLevel();
+    return {
+      ok: true,
+      nodeId: ch.id,
+      code: ch.code,
+      clearedMask: expeditionState.clearedMask,
+      clearedCount: popcount24(expeditionState.clearedMask),
+      secretUnlocked: expeditionState.secretUnlocked,
+    };
+  }
+
+  function exitSandboxMode() {
+    if (sandboxMode === 'campaign') return false;
+    const prevMode = sandboxMode;
+
+    if (prevMode === 'daily') {
+      saveDailyProgress();
+      dailyState.active = false;
+      dailyState.challenge = null;
+      dailyState.finished = false;
+    } else if (prevMode === 'level') {
+      levelState.active = false;
+      levelState.challenge = null;
+      levelState.clearedThisRun = false;
+    }
+
+    const backup = sandboxBackup;
+    sandboxMode = 'campaign';
+    sandboxBackup = null;
 
     if (backup) {
       economyEngine.importState(backup.econState);
@@ -866,12 +1344,23 @@ async function bootCommandDeck() {
 
     wafersPerSecEma = 0;
     lastTelemetry = null;
+    triggerAirlockTransition();
     renderer?.syncGridSize();
     renderer?.centerCamera();
+    forceSave();
     updateAllUi();
-    crisisTicker?.pushLog('Exited Daily Challenge — campaign cleanroom restored untouched.', 'good');
+    crisisTicker?.pushLog(
+      prevMode === 'daily'
+        ? 'Exited Daily Challenge — campaign cleanroom restored & saved.'
+        : 'Exited Expedition Contract — campaign cleanroom restored & saved.',
+      'good'
+    );
     showToast('Returned to Campaign Cleanroom.');
     return true;
+  }
+
+  function exitDailyChallenge() {
+    return exitSandboxMode();
   }
 
   function applyHydratedState(stateObj) {
@@ -883,14 +1372,19 @@ async function bootCommandDeck() {
       audioEngine.setMasterVolume(stateObj.audio.vol ?? 0.6);
       audioEngine.setMuted(Boolean(stateObj.audio.mute));
     }
+    const exp = stateObj.expedition || {};
+    expeditionState.clearedMask = (Number(exp.clearedMask) || 0) & 0xffffff;
+    expeditionState.bagMask = (Number(exp.bagMask) || 0) & 0xffffff;
+    expeditionState.secretUnlocked = Boolean(exp.secretUnlocked);
+    expeditionState.secretBest = Math.max(0, Math.floor(Number(exp.secretBest) || 0));
     renderer?.syncGridSize();
     renderer?.centerCamera();
     updateAllUi();
   }
 
   function hydrateNow() {
-    if (dailyState.active) {
-      return { ok: false, reason: 'daily_active' };
+    if (sandboxMode !== 'campaign') {
+      return { ok: false, reason: `${sandboxMode}_active` };
     }
     const res = vault.hydrateCampaign(Date.now());
     vaultStatus.source = res.source;
@@ -916,7 +1410,7 @@ async function bootCommandDeck() {
       },
       onUpgradeTier() {
         audioEngine.unlock();
-        if (dailyState.active) return;
+        if (sandboxMode !== 'campaign') return;
         const ok = economyEngine.upgradeTier();
         if (!ok) return;
         const nextSpec = getTierSpec(economyEngine.tier);
@@ -924,10 +1418,30 @@ async function bootCommandDeck() {
         audioEngine.playPrestigeSwell();
         renderer?.syncGridSize();
         renderer?.centerCamera();
+        celebrateMilestone({
+          title: `TIER 0${economyEngine.tier} UNLOCKED!`,
+          subtitle: nextSpec.name,
+          rewardText: `${nextSpec.gridSize}×${nextSpec.gridSize} Cleanroom`,
+          intensity: 1.5,
+          withAirlock: true,
+        });
+        checkSecretAutoUnlock();
         forceSave();
         updateAllUi();
         crisisTicker?.pushLog(`Expanded to ${nextSpec.name} (${nextSpec.gridSize}×${nextSpec.gridSize}).`, 'good');
         showToast(`Upgraded to ${nextSpec.name}!`);
+      },
+      onTapSecretBrand: handleTapSecretBrand,
+      onOpenLevels() {
+        audioEngine.unlock();
+        audioEngine.playClick();
+        levelsModal?.open(buildUiSnapshot());
+      },
+      onOpenSecretArcade() {
+        audioEngine.unlock();
+        audioEngine.playClick();
+        if (!expeditionState.secretUnlocked) return;
+        secretMinigameModal?.open(buildUiSnapshot());
       },
       onResetDaily() {
         audioEngine.playClick();
@@ -947,7 +1461,11 @@ async function bootCommandDeck() {
       },
       onExitDaily() {
         audioEngine.playClick();
-        exitDailyChallenge();
+        exitSandboxMode();
+      },
+      onExitSandbox() {
+        audioEngine.playClick();
+        exitSandboxMode();
       },
       onOpenBlueprint() {
         audioEngine.unlock();
@@ -963,13 +1481,13 @@ async function bootCommandDeck() {
         audioEngine.unlock();
         const cur = audioEngine.getState();
         audioEngine.setMuted(!cur.muted);
-        if (!dailyState.active) forceSave();
+        if (sandboxMode === 'campaign') forceSave();
         updateAllUi();
       },
       onVolumeChange(vol) {
         audioEngine.unlock();
         audioEngine.setMasterVolume(vol);
-        if (!dailyState.active) forceSave();
+        if (sandboxMode === 'campaign') forceSave();
         updateAllUi();
       },
       async onInstallApp() {
@@ -1013,7 +1531,7 @@ async function bootCommandDeck() {
       onToggleSub: toggleToolSub,
       onUpgradeFleet() {
         audioEngine.unlock();
-        if (dailyState.active) return;
+        if (sandboxMode !== 'campaign') return;
         if (economyEngine.upgradeFleet()) {
           audioEngine.playClick();
           forceSave();
@@ -1021,12 +1539,19 @@ async function bootCommandDeck() {
           crisisTicker?.pushLog(`Autonomous FOUP Fleet upgraded to Lv.${economyEngine.fleetLevel}.`, 'good');
         }
       },
+      onCannotAfford(info) {
+        audioEngine.unlock();
+        audioEngine.playClick();
+        if (info?.kind === 'fleet') {
+          showToast(`Need ${bsFormat(info.cost, 'Dies')} to upgrade FOUP Fleet.`, 'warn');
+        }
+      },
       onAssignAgent(sectorIdx, agentIdx) {
         audioEngine.unlock();
         if (economyEngine.assignAgent(sectorIdx, agentIdx)) {
           syncAgentsToGrid();
           audioEngine.playClick();
-          if (!dailyState.active) forceSave();
+          if (sandboxMode === 'campaign') forceSave();
           updateAllUi();
           const spec = agentIdx >= 0 ? AGENT_CATALOG[agentIdx] : null;
           crisisTicker?.pushLog(
@@ -1047,7 +1572,14 @@ async function bootCommandDeck() {
         const prevTitle = economyEngine.activeCrisis?.title || 'Incident';
         if (economyEngine.mitigateCrisis(choiceId)) {
           audioEngine.playClick();
-          if (!dailyState.active) forceSave();
+          crisesMitigated += 1;
+          celebrateMilestone({
+            title: 'CRISIS MITIGATED!',
+            subtitle: prevTitle,
+            intensity: 1.2,
+          });
+          checkSecretAutoUnlock();
+          if (sandboxMode === 'campaign') forceSave();
           updateAllUi();
           crisisTicker.pushLog(`${prevTitle} mitigated via [${choiceId}].`, 'good');
           showToast('Incident mitigated!');
@@ -1083,16 +1615,16 @@ async function bootCommandDeck() {
     callbacks: {
       onBuyNode(nodeIdx) {
         audioEngine.unlock();
-        if (dailyState.active) return;
+        if (sandboxMode !== 'campaign') return;
         if (economyEngine.buyPrestigeNode(nodeIdx)) {
-          audioEngine.playClick();
+          audioEngine.playNodeUnlockPop?.(economyEngine.prestigeLevels[nodeIdx]);
           forceSave();
           updateAllUi();
         }
       },
       onRewriteArchitecture() {
         audioEngine.unlock();
-        if (dailyState.active) return;
+        if (sandboxMode !== 'campaign') return;
         const pend = economyEngine.getDisplayTelemetry().pendingShards;
         if (pend <= 0) return;
         economyEngine.rewriteArchitecture();
@@ -1104,6 +1636,12 @@ async function bootCommandDeck() {
         renderer?.centerCamera();
         renderer?.triggerPrestigeVfx();
         audioEngine.playPrestigeSwell();
+        celebrateMilestone({
+          title: 'ARCHITECTURE REWRITTEN!',
+          subtitle: `+${pend} Photomask ${pend === 1 ? 'Shard' : 'Shards'} Banked`,
+          intensity: 2.0,
+          withAirlock: true,
+        });
         forceSave();
         updateAllUi();
         prestigeModal.close();
@@ -1148,8 +1686,8 @@ async function bootCommandDeck() {
       },
       onImportJsonSave(jsonText) {
         audioEngine.unlock();
-        if (dailyState.active) {
-          return { ok: false, error: 'Exit Daily Mode before importing a full campaign save.' };
+        if (sandboxMode !== 'campaign') {
+          return { ok: false, error: 'Exit sandbox mode before importing a full campaign save.' };
         }
         const parsed = parsePortableSave(jsonText);
         if (!parsed.ok) {
@@ -1177,7 +1715,7 @@ async function bootCommandDeck() {
         };
       },
       onDrillWipePrimary() {
-        if (dailyState.active) exitDailyChallenge();
+        if (sandboxMode !== 'campaign') exitSandboxMode();
         forceSave();
         localStorage.clear();
         try {
@@ -1188,7 +1726,7 @@ async function bootCommandDeck() {
         window.location.reload();
       },
       onDrillWipeCookie() {
-        if (dailyState.active) exitDailyChallenge();
+        if (sandboxMode !== 'campaign') exitSandboxMode();
         forceSave();
         document.cookie = 'krunked-cookie-vault-v1=; max-age=0; path=/; SameSite=Lax';
         window.location.reload();
@@ -1202,6 +1740,81 @@ async function bootCommandDeck() {
   offlineModal = createOfflineReportModal({
     modalEl: offlineModalEl,
     callbacks: {
+      onClose() {
+        audioEngine.playClick();
+      },
+    },
+  });
+
+  levelsModal = createLevelsModal({
+    modalEl: levelsModalEl,
+    callbacks: {
+      onLaunchNode(nodeId) {
+        launchLevelNode(nodeId);
+      },
+      onLaunchNextUnseen() {
+        launchNextUnseenLevel();
+      },
+      onLockedNode(node) {
+        audioEngine.unlock();
+        audioEngine.playClick();
+        showToast(`${node.code} locked — expand Cleanroom to Tier 0${node.tier}!`, 'warn');
+      },
+      onClose() {
+        audioEngine.playClick();
+      },
+    },
+  });
+
+  secretMinigameModal = createSecretMinigameModal({
+    modalEl: secretModalEl,
+    callbacks: {
+      onLaserHit(res) {
+        audioEngine.unlock();
+        audioEngine.playNodeUnlockPop?.(res?.combo || 1);
+      },
+      onClaimReward({ score, reward }) {
+        audioEngine.unlock();
+        if (score > expeditionState.secretBest) {
+          expeditionState.secretBest = score;
+        }
+        if (reward) {
+          if (sandboxMode === 'campaign') {
+            economyEngine.dies = bsAdd(economyEngine.dies, reward.diesReward);
+            economyEngine.flops = bsAdd(economyEngine.flops, reward.flopsReward);
+            economyEngine.lifetimeFlops = bsAdd(economyEngine.lifetimeFlops, reward.flopsReward);
+            forceSave();
+          } else if (sandboxBackup?.econState) {
+            sandboxBackup.econState.dies = bsAdd(
+              bsSanitize(sandboxBackup.econState.dies),
+              reward.diesReward
+            );
+            sandboxBackup.econState.flops = bsAdd(
+              bsSanitize(sandboxBackup.econState.flops),
+              reward.flopsReward
+            );
+            sandboxBackup.econState.lifetimeFlops = bsAdd(
+              bsSanitize(sandboxBackup.econState.lifetimeFlops),
+              reward.flopsReward
+            );
+          }
+          celebrateMilestone({
+            title: `ARCADE ${reward.medal} MEDAL!`,
+            subtitle: `Score ${score.toLocaleString()}`,
+            rewardText: `+${bsFormat(reward.diesReward, 'Dies')} · +${bsFormat(reward.flopsReward, 'FLOPs')}`,
+            intensity: 2.0,
+          });
+          crisisTicker?.pushLog(
+            `Laser Arcade [${reward.medal}]: ${score.toLocaleString()} pts -> +${bsFormat(reward.diesReward, 'Dies')} & +${bsFormat(reward.flopsReward, 'FLOPs')}!`,
+            'good'
+          );
+        }
+        updateAllUi();
+      },
+      onReplay() {
+        audioEngine.unlock();
+        audioEngine.playClick();
+      },
       onClose() {
         audioEngine.playClick();
       },
@@ -1235,6 +1848,12 @@ async function bootCommandDeck() {
     if (st.audio) {
       audioEngine.setMasterVolume(st.audio.vol ?? 0.6);
       audioEngine.setMuted(Boolean(st.audio.mute));
+    }
+    if (st.expedition) {
+      expeditionState.clearedMask = (Number(st.expedition.clearedMask) || 0) & 0xffffff;
+      expeditionState.bagMask = (Number(st.expedition.bagMask) || 0) & 0xffffff;
+      expeditionState.secretUnlocked = Boolean(st.expedition.secretUnlocked);
+      expeditionState.secretBest = Math.max(0, Math.floor(Number(st.expedition.secretBest) || 0));
     }
 
     const maxTheoreticalDiesPerSec = 250 * Math.pow(10, Math.max(0, economyEngine.tier - 1));
@@ -1302,11 +1921,30 @@ async function bootCommandDeck() {
     console.warn('Renderer initialization deferred:', err);
   }
 
+  function setPaintDragMode(enabled) {
+    const next = Boolean(enabled);
+    renderer?.setPaintDragMode?.(next);
+    const active = Boolean(renderer?.getPaintDragMode?.() ?? next);
+    if (paintModeBtn) {
+      paintModeBtn.textContent = active ? 'Mode: Paint Swipe' : 'Mode: Pan';
+      paintModeBtn.classList.toggle('is-paint-active', active);
+      paintModeBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+    return active;
+  }
+
   // Wire Viewport Controls & Mobile Tabs
   centerCamBtn?.addEventListener('click', () => {
     audioEngine.unlock();
     audioEngine.playClick();
     renderer?.centerCamera();
+  });
+
+  paintModeBtn?.addEventListener('click', () => {
+    audioEngine.unlock();
+    audioEngine.playClick();
+    const cur = Boolean(renderer?.getPaintDragMode?.());
+    setPaintDragMode(!cur);
   });
 
   mobileCrisisBtn?.addEventListener('click', () => {
@@ -1331,12 +1969,18 @@ async function bootCommandDeck() {
   }
 
   // Keyboard ergonomics
+  function closeAllModals() {
+    prestigeModal.close();
+    blueprintModal.close();
+    offlineModal.close();
+    levelsModal.close();
+    secretMinigameModal.close();
+  }
+
   window.addEventListener('keydown', (e) => {
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA')) {
       if (e.key === 'Escape') {
-        prestigeModal.close();
-        blueprintModal.close();
-        offlineModal.close();
+        closeAllModals();
       }
       return;
     }
@@ -1350,9 +1994,7 @@ async function bootCommandDeck() {
     } else if (k === '0' || k === '1' || k === '2' || k === '3') {
       setHeatmapMode(Number(k));
     } else if (k === 'escape') {
-      prestigeModal.close();
-      blueprintModal.close();
-      offlineModal.close();
+      closeAllModals();
     }
   });
 
@@ -1414,11 +2056,18 @@ async function bootCommandDeck() {
     const prevBrownout = lastTelemetry?.brownoutLevel || 0;
 
     const mods = economyEngine.getSimulationModifiers();
-    if (dailyState.active && dailyState.challenge) {
+    if (sandboxMode === 'daily' && dailyState.active && dailyState.challenge) {
       const dm = dailyState.challenge.modifiers;
       mods.ambientK = dm.ambientK;
       mods.powerMult = (mods.powerMult || 1) * (dm.powerMult || 1);
       mods.defectBias = Math.max(mods.defectBias || 0, dm.defectBias || 0);
+    } else if (sandboxMode === 'level' && levelState.active && levelState.challenge) {
+      const lm = levelState.challenge.modifiers;
+      mods.ambientK = lm.ambientK;
+      mods.powerMult = (mods.powerMult || 1) * (lm.powerMult || 1);
+      mods.defectBias = Math.max(mods.defectBias || 0, lm.defectBias || 0);
+      mods.beltSpeedMult = (mods.beltSpeedMult || 1) * (lm.beltSpeedMult || 1);
+      mods.speedMult = (mods.speedMult || 1) * (lm.beltSpeedMult || 1);
     }
 
     const simTel = gridEngine.stepTick(mods);
@@ -1493,14 +2142,23 @@ async function bootCommandDeck() {
       }
     }
 
-    // Periodic ambient quip for second-monitor flavor
+    if (sandboxMode === 'level' && levelState.active && levelState.challenge) {
+      levelState.elapsedSec += TICK_MS / 1000;
+      const levelVaultedGood = Math.max(0, simTel.vaultedGood - levelState.startVaultedGood);
+      if (!levelState.clearedThisRun && levelVaultedGood >= levelState.challenge.waferGoal) {
+        completeActiveLevel();
+      }
+    }
+
+    // Periodic ambient quip for second-monitor flavor (24-entry non-repeating shuffle bag)
     const simSec = Math.floor(gridEngine.state.tickCount / 10);
     if (simSec < lastQuipSec) {
       lastQuipSec = simSec;
     } else if (simSec >= lastQuipSec + 60) {
       lastQuipSec = simSec;
-      const quipIdx = Math.floor(simSec / 60) % SATIRICAL_TICKER_QUIPS.length;
-      crisisTicker.pushLog(SATIRICAL_TICKER_QUIPS[quipIdx], 'info');
+      const drawn = drawNextQuip(quipBagState);
+      quipBagState = drawn.nextState;
+      crisisTicker.pushLog(drawn.text, 'info');
     }
   }
 
@@ -1528,7 +2186,7 @@ async function bootCommandDeck() {
     }
 
     // Background tab gap > 5000ms routed via analytical offline solver (ARCHITECTURE.md Sec 3)
-    if (!dailyState.active && wallGapMs > 5000 && economyEngine.hwmDiesPerMin > 0) {
+    if (sandboxMode === 'campaign' && wallGapMs > 5000 && economyEngine.hwmDiesPerMin > 0) {
       const maxTheoretical = 250 * Math.pow(10, Math.max(0, economyEngine.tier - 1));
       const gapReport = solveOfflineCatchup({
         tClose: nowWall - wallGapMs,
@@ -1568,9 +2226,9 @@ async function bootCommandDeck() {
 
     if (autosaveAccumMs >= AUTOSAVE_INTERVAL_MS) {
       autosaveAccumMs = 0;
-      if (dailyState.active) {
+      if (sandboxMode === 'daily') {
         saveDailyProgress();
-      } else {
+      } else if (sandboxMode === 'campaign') {
         forceSave();
       }
     }
@@ -1581,9 +2239,10 @@ async function bootCommandDeck() {
   requestAnimationFrame(frameLoop);
 
   const flushOnLeave = () => {
-    if (dailyState.active) {
+    if (sandboxMode === 'daily') {
       saveDailyProgress();
     } else if (
+      sandboxMode === 'campaign' &&
       localStorage.getItem('swarm_tycoon_save_v1') !== null &&
       document.cookie.includes('krunked-cookie-vault-v1=')
     ) {
@@ -1601,7 +2260,7 @@ async function bootCommandDeck() {
   window.__SWARM_TYCOON__ = {
     getState() {
       return {
-        mode: dailyState.active ? 'daily' : 'campaign',
+        mode: sandboxMode,
         ...buildUiSnapshot(),
       };
     },
@@ -1615,6 +2274,25 @@ async function bootCommandDeck() {
     getVaultStatus: () => ({ ...vaultStatus }),
     triggerDailyChallenge,
     exitDailyChallenge,
+    exitSandboxMode,
+    getExpeditionState: () => ({
+      ...expeditionState,
+      clearedCount: popcount24(expeditionState.clearedMask),
+      totalNodes: LEVEL_POOL.length,
+      activeLevel: levelState.active
+        ? {
+            ...levelState.challenge,
+            vaultedGood: Math.max(0, gridEngine.state.vaultedGood - levelState.startVaultedGood),
+            clearedThisRun: levelState.clearedThisRun,
+          }
+        : null,
+    }),
+    launchLevelNode: (nodeId, opts = { bypassLock: true }) => launchLevelNode(nodeId, opts),
+    launchNextUnseenLevel,
+    completeActiveLevelForTest,
+    unlockSecretMinigame,
+    openSecretMinigame,
+    setPaintDragMode,
     exportBlueprintHash: () => encodeBlueprintHash(gridEngine.exportLayoutSnapshot()),
     importBlueprintHash,
     setHeatmapMode,
