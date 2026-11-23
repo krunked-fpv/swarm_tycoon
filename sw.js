@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'swarm-tycoon-cache-v1';
+const CACHE_VERSION = 'swarm-tycoon-cache-v2';
 
 const PRECACHE_URLS = [
   './',
@@ -15,6 +15,8 @@ const PRECACHE_URLS = [
   './src/sim/cryoLoopSolver.js',
   './src/sim/powerGridSolver.js',
   './src/sim/dailySeedGenerator.js',
+  './src/sim/levelPool.js',
+  './src/sim/secretMinigame.js',
   './src/render/isoScene.js',
   './src/render/proceduralTextures.js',
   './src/render/waferIridescencePipeline.js',
@@ -40,6 +42,8 @@ const PRECACHE_URLS = [
   './src/ui/crisisTicker.js',
   './src/ui/blueprintModal.js',
   './src/ui/offlineReportModal.js',
+  './src/ui/levelsModal.js',
+  './src/ui/secretMinigameModal.js',
 ];
 
 self.addEventListener('install', (event) => {

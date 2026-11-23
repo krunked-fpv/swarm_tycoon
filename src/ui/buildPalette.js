@@ -52,6 +52,17 @@ function createEl(tag, className, text = '') {
   return el;
 }
 
+function triggerNopeShake(el) {
+  if (!el) return;
+  el.classList.remove('is-nope-shake');
+  void el.offsetWidth;
+  el.classList.add('is-nope-shake');
+  clearTimeout(el._nopeTimer);
+  el._nopeTimer = setTimeout(() => {
+    el.classList.remove('is-nope-shake');
+  }, 380);
+}
+
 function getMachineTag(entry) {
   if (entry.supplyKw > 0) return `+${entry.supplyKw}kW`;
   if (entry.coolKw > 0) return `-${entry.coolKw}kW`;
@@ -121,7 +132,7 @@ export function createBuildPalette({ containerEl, callbacks }) {
     btn.append(top, meta);
     btn.addEventListener('click', () => callbacks.onSelectTool?.({ toolId: ut.toolId, kind: ut.kind }));
     utilGrid.appendChild(btn);
-    toolButtonRecords.push({ btn, toolId: ut.toolId, costDies: 0 });
+    toolButtonRecords.push({ btn, toolId: ut.toolId, costDies: 0, canAfford: true });
   }
   buildSec.appendChild(utilGrid);
 
@@ -150,11 +161,16 @@ export function createBuildPalette({ containerEl, callbacks }) {
       );
 
       btn.append(top, meta);
-      btn.addEventListener('click', () =>
-        callbacks.onSelectTool?.({ toolId: entry.id, kind: 'machine' })
-      );
+      const rec = { btn, toolId: entry.id, costDies: entry.costDies, canAfford: true };
+      btn.addEventListener('click', () => {
+        if (!rec.canAfford) {
+          triggerNopeShake(btn);
+          callbacks.onCannotAfford?.({ kind: 'machine', entry });
+        }
+        callbacks.onSelectTool?.({ toolId: entry.id, kind: 'machine' });
+      });
       mGrid.appendChild(btn);
-      toolButtonRecords.push({ btn, toolId: entry.id, costDies: entry.costDies });
+      toolButtonRecords.push(rec);
     }
     buildSec.appendChild(mGrid);
   }
@@ -173,10 +189,20 @@ export function createBuildPalette({ containerEl, callbacks }) {
   const fleetNextLabel = createEl('span', 'metric-sub num', 'Next: 36%');
   fleetRow.append(fleetRatioLabel, fleetNextLabel);
 
+  let canBuyFleetLatest = false;
+  let fleetCostLatest = bsFrom(120);
+
   const fleetBtn = createEl('button', 'fleet-btn', 'Upgrade Fleet (120 Dies)');
   fleetBtn.type = 'button';
   fleetBtn.id = 'btn-upgrade-fleet';
-  fleetBtn.addEventListener('click', () => callbacks.onUpgradeFleet?.());
+  fleetBtn.addEventListener('click', () => {
+    if (!canBuyFleetLatest) {
+      triggerNopeShake(fleetBtn);
+      callbacks.onCannotAfford?.({ kind: 'fleet', cost: fleetCostLatest });
+      return;
+    }
+    callbacks.onUpgradeFleet?.();
+  });
   fleetCard.append(fleetRow, fleetBtn);
   sectorSec.appendChild(fleetCard);
 
@@ -234,6 +260,8 @@ export function createBuildPalette({ containerEl, callbacks }) {
     const econ = snapshot.economy;
     const tool = snapshot.toolState || { toolId: -1, dir: 1, sub: 0, kind: 'select' };
     const dailyActive = Boolean(snapshot.daily?.active);
+    const levelActive = Boolean(snapshot.level?.active);
+    const sandboxActive = dailyActive || levelActive;
 
     const dirIdx = (tool.dir || 0) & 3;
     const subVal = (tool.sub || 0) & 3;
@@ -253,6 +281,7 @@ export function createBuildPalette({ containerEl, callbacks }) {
       rec.btn.classList.toggle('is-active', isSelected);
       if (rec.costDies > 0) {
         const canAfford = bsCmp(econ.dies, bsFrom(rec.costDies)) >= 0;
+        rec.canAfford = canAfford;
         rec.btn.classList.toggle('is-unaffordable', !canAfford);
       }
     }
@@ -264,12 +293,18 @@ export function createBuildPalette({ containerEl, callbacks }) {
     fleetRatioLabel.textContent = `Passive: ${ratioCur}% HWM`;
     fleetNextLabel.textContent = `Next: ${ratioNext}%`;
 
-    const canBuyFleet = !dailyActive && bsCmp(econ.dies, econ.fleetCost) >= 0;
-    fleetBtn.textContent = dailyActive
-      ? 'Fleet Locked (Daily)'
-      : `Upgrade Fleet (${bsFormat(econ.fleetCost, 'Dies')})`;
-    fleetBtn.disabled = !canBuyFleet;
+    const canBuyFleet = !sandboxActive && bsCmp(econ.dies, econ.fleetCost) >= 0;
+    canBuyFleetLatest = canBuyFleet;
+    fleetCostLatest = econ.fleetCost;
+    fleetBtn.textContent = levelActive
+      ? 'Fleet Locked (Contract)'
+      : dailyActive
+        ? 'Fleet Locked (Daily)'
+        : `Upgrade Fleet (${bsFormat(econ.fleetCost, 'Dies')})`;
+    fleetBtn.disabled = sandboxActive;
+    fleetBtn.setAttribute('aria-disabled', canBuyFleet ? 'false' : 'true');
     fleetBtn.classList.toggle('is-ready', canBuyFleet);
+    fleetBtn.classList.toggle('is-unaffordable', !sandboxActive && !canBuyFleet);
 
     // Sectors & AI Directors
     const tierChanged = cachedTierForOptions !== econ.tier;
