@@ -314,6 +314,9 @@ export function createHudController({ hudEl, dailyBannerEl, callbacks }) {
     if (vaultStatus.selfHealed) {
       setText(vaultPill, 'HEALED: cookie-vault');
       vaultPill.classList.add('vault-healed');
+    } else if (vaultStatus.cookieRegenerated) {
+      setText(vaultPill, 'REGEN: cookie-vault');
+      vaultPill.classList.add('vault-healed');
     } else {
       setText(vaultPill, vaultStatus.source === 'cookie' ? 'Vault: Cookie' : 'Vault: OK');
       vaultPill.classList.remove('vault-healed');

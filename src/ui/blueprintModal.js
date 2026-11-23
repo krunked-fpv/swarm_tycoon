@@ -121,7 +121,25 @@ export function createBlueprintModal({ modalEl, callbacks }) {
   saveRow.append(exportJsonBtn, importJsonLabel);
   saveSec.append(saveNote, saveRow, jsonStatus);
 
-  body.append(expSec, impSec, saveSec);
+  // Section 4: krunked-cookie-vault-v1 Self-Healing & Runtime Diagnostics
+  const diagSec = createEl('div', 'bp-section');
+  diagSec.appendChild(createEl('span', 'section-title', 'krunked-cookie-vault-v1 Self-Healing & Runtime Diagnostics'));
+  const diagSummary = createEl('div', 'bp-preview', 'Inspecting bidirectional vault status...');
+  diagSummary.id = 'vault-diag-summary';
+
+  const diagRow = createEl('div', 'bp-row');
+  const wipePrimaryBtn = createEl('button', 'btn-secondary', 'Drill: Wipe LocalStorage & Reload');
+  wipePrimaryBtn.type = 'button';
+  wipePrimaryBtn.id = 'btn-drill-wipe-primary';
+
+  const wipeCookieBtn = createEl('button', 'btn-secondary', 'Drill: Wipe Shadow Cookie & Reload');
+  wipeCookieBtn.type = 'button';
+  wipeCookieBtn.id = 'btn-drill-wipe-cookie';
+
+  diagRow.append(wipePrimaryBtn, wipeCookieBtn);
+  diagSec.append(diagSummary, diagRow);
+
+  body.append(expSec, impSec, saveSec, diagSec);
   card.append(header, body);
   modalEl.appendChild(card);
 
@@ -153,10 +171,20 @@ export function createBlueprintModal({ modalEl, callbacks }) {
 
   function refresh() {
     const info = callbacks.onGetCurrentBlueprint?.();
-    if (!info) return;
-    activeHashString = info.hash || '';
-    expInput.value = activeHashString;
-    expMeta.textContent = `${info.gridSize}×${info.gridSize} · Tier 0${info.tier} · RLE + FNV-1a Checksum`;
+    if (info) {
+      activeHashString = info.hash || '';
+      expInput.value = activeHashString;
+      expMeta.textContent = `${info.gridSize}×${info.gridSize} · Tier 0${info.tier} · RLE + FNV-1a Checksum`;
+    }
+    const d = callbacks.onGetVaultDiagnostics?.();
+    if (d) {
+      diagSummary.className = d.selfHealed || d.cookieRegenerated ? 'bp-preview is-valid' : 'bp-preview';
+      diagSummary.textContent =
+        `Boot: source=${d.source} · selfHealed=${d.selfHealed} (${d.healedFrom || 'none'}) · cookieRegen=${d.cookieRegenerated} | ` +
+        `PrimaryLS: ${d.hasPrimary ? 'PRESENT' : 'MISSING'} (${d.primaryBytes}B) | ` +
+        `Cookie: ${d.hasCookie ? 'PRESENT' : 'MISSING'} (${d.cookieBytes}B) | ` +
+        `SW: ${d.swState} | Audio: ${d.audioUnlocked ? 'UNLOCKED' : 'LOCKED'} (${d.audioContextState}) | 120f FPS: ${d.fps120}`;
+    }
   }
 
   copyHashBtn.addEventListener('click', async () => {
@@ -180,6 +208,14 @@ export function createBlueprintModal({ modalEl, callbacks }) {
   });
 
   impInput.addEventListener('input', updateImportPreview);
+
+  wipePrimaryBtn.addEventListener('click', () => {
+    callbacks.onDrillWipePrimary?.();
+  });
+
+  wipeCookieBtn.addEventListener('click', () => {
+    callbacks.onDrillWipeCookie?.();
+  });
 
   impBtn.addEventListener('click', () => {
     const res = callbacks.onImportBlueprint?.(impInput.value);

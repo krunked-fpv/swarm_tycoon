@@ -102,11 +102,43 @@ function isStandaloneMode() {
   }
 }
 
-function registerServiceWorker() {
+function registerServiceWorker(onStateChange) {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+    onStateChange?.('unsupported');
     return;
   }
-  navigator.serviceWorker?.register('./sw.js', { scope: './' }).catch(() => {});
+  onStateChange?.('registering');
+  const bindWorker = (sw) => {
+    if (!sw) return;
+    onStateChange?.(sw.state || 'installing');
+    sw.addEventListener('statechange', () => {
+      onStateChange?.(sw.state || 'updated');
+    });
+  };
+  navigator.serviceWorker
+    ?.register('./sw.js', { scope: './' })
+    .then((reg) => {
+      if (reg.active) {
+        onStateChange?.(reg.active.state || 'activated');
+      } else if (reg.waiting) {
+        bindWorker(reg.waiting);
+      } else if (reg.installing) {
+        bindWorker(reg.installing);
+      }
+      reg.addEventListener?.('updatefound', () => {
+        if (reg.installing) bindWorker(reg.installing);
+      });
+    })
+    .catch(() => {
+      onStateChange?.('error');
+    });
+  navigator.serviceWorker?.ready
+    ?.then((reg) => {
+      if (reg?.active) {
+        onStateChange?.(reg.active.state || 'activated');
+      }
+    })
+    .catch(() => {});
 }
 
 function setupDailyCleanroom(gridEngine, challenge) {
@@ -216,8 +248,6 @@ function setupDailyCleanroom(gridEngine, challenge) {
 }
 
 async function bootCommandDeck() {
-  registerServiceWorker();
-
   const hudEl = document.getElementById('hud-bar');
   const dailyBannerEl = document.getElementById('daily-banner');
   const buildDockEl = document.getElementById('build-dock');
@@ -227,8 +257,19 @@ async function bootCommandDeck() {
   const inspectorEl = document.getElementById('tile-inspector');
   const toastRackEl = document.getElementById('toast-rack');
   const centerCamBtn = document.getElementById('btn-center-cam');
+  const fpsPillEl = document.getElementById('fps-telemetry-pill');
+  const swPillEl = document.getElementById('sw-telemetry-pill');
   const mobileCrisisBtn = document.getElementById('btn-mobile-crisis');
   const mobileTabBtns = Array.from(document.querySelectorAll('#mobile-dock-tabs [data-mobile-pane]'));
+
+  let swLifecycleState = 'boot';
+  const setSwState = (state) => {
+    swLifecycleState = String(state || 'unknown');
+    if (swPillEl) {
+      swPillEl.textContent = `SW: ${swLifecycleState}`;
+    }
+  };
+  registerServiceWorker(setSwState);
 
   const prestigeModalEl = document.getElementById('prestige-modal');
   const blueprintModalEl = document.getElementById('blueprint-modal');
@@ -243,6 +284,10 @@ async function bootCommandDeck() {
   let lastTelemetry = null;
   let heatmapMode = 0;
   let fpsEma = 60;
+  let fps120 = 60;
+  const rafSamples = new Float32Array(120);
+  let rafIdx = 0;
+  let rafCount = 0;
   let wafersPerSecEma = 0;
   let lastWaferSfxMs = 0;
   let lastEuvSfxMs = 0;
@@ -948,11 +993,7 @@ async function bootCommandDeck() {
       onInspectVault() {
         audioEngine.unlock();
         audioEngine.playClick();
-        showToast(
-          vaultStatus.selfHealed
-            ? `Vault self-healed from ${vaultStatus.healedFrom} (${vaultStatus.cookieBytes}B cookie).`
-            : `Vault synced (${vaultStatus.source}, ${vaultStatus.cookieBytes}B shadow cookie).`
-        );
+        blueprintModal?.open();
       },
     },
   });
@@ -1121,6 +1162,37 @@ async function bootCommandDeck() {
         showToast('Campaign save imported!');
         return { ok: true };
       },
+      onGetVaultDiagnostics() {
+        const audioSt = audioEngine.getState();
+        const hasPrimary = localStorage.getItem('swarm_tycoon_save_v1') !== null;
+        const hasCookie = document.cookie.includes('krunked-cookie-vault-v1=');
+        return {
+          ...vaultStatus,
+          hasPrimary,
+          hasCookie,
+          swState: swLifecycleState,
+          audioUnlocked: Boolean(audioSt.unlocked),
+          audioContextState: audioSt.contextState || 'unavailable',
+          fps120: fps120.toFixed(1),
+        };
+      },
+      onDrillWipePrimary() {
+        if (dailyState.active) exitDailyChallenge();
+        forceSave();
+        localStorage.clear();
+        try {
+          indexedDB.deleteDatabase('swarm_tycoon_idb_v1');
+        } catch {
+          // ignore
+        }
+        window.location.reload();
+      },
+      onDrillWipeCookie() {
+        if (dailyState.active) exitDailyChallenge();
+        forceSave();
+        document.cookie = 'krunked-cookie-vault-v1=; max-age=0; path=/; SameSite=Lax';
+        window.location.reload();
+      },
       onClose() {
         audioEngine.playClick();
       },
@@ -1197,6 +1269,11 @@ async function bootCommandDeck() {
     if (hydration.selfHealed) {
       crisisTicker.pushLog(
         `Self-healed campaign state from ${hydration.healedFrom} (${vaultStatus.cookieBytes}B vault).`,
+        'gold'
+      );
+    } else if (hydration.cookieRegenerated) {
+      crisisTicker.pushLog(
+        `Regenerated krunked-cookie-vault-v1 shadow cookie from localStorage (${vaultStatus.cookieBytes}B).`,
         'gold'
       );
     } else {
@@ -1438,6 +1515,16 @@ async function bootCommandDeck() {
     if (rawDeltaMs > 0 && rawDeltaMs < 1000) {
       const instFps = 1000 / Math.max(1, rawDeltaMs);
       fpsEma = fpsEma * 0.9 + Math.min(240, instFps) * 0.1;
+      rafSamples[rafIdx] = rawDeltaMs;
+      rafIdx = (rafIdx + 1) % 120;
+      if (rafCount < 120) rafCount++;
+      let sum = 0;
+      for (let i = 0; i < rafCount; i++) sum += rafSamples[i];
+      const avgDelta = sum / Math.max(1, rafCount);
+      fps120 = Math.min(240, 1000 / Math.max(1, avgDelta));
+      if (fpsPillEl) {
+        fpsPillEl.textContent = `${fps120.toFixed(1)} FPS (120f)`;
+      }
     }
 
     // Background tab gap > 5000ms routed via analytical offline solver (ARCHITECTURE.md Sec 3)
