@@ -20,6 +20,20 @@ const _color = new Uint8Array(784);
 const _pathStack = new Uint16Array(784);
 const _movedOut = new Uint8Array(784);
 const _movedIn = new Uint8Array(784);
+const _splitters = new Uint16Array(784);
+const _splitterStartK = new Uint8Array(784);
+const _probeSeen = new Uint32Array(784);
+const _tIndex = new Int16Array(784);
+const _tLow = new Int16Array(784);
+const _tOnStack = new Uint8Array(784);
+const _tStack = new Uint16Array(784);
+const _dfsNode = new Uint16Array(784);
+const _dfsEdge = new Uint8Array(784);
+const _sccId = new Int16Array(784);
+const _canReachEmpty = new Uint8Array(784);
+const _cycleColor = new Uint8Array(784);
+const _cyclePred = new Int16Array(784);
+let _probeStamp = 0;
 
 function rollDefect(state, cellIdx, mods) {
   const bias = Number.isFinite(mods.defectBias) ? Math.max(0, mods.defectBias) : 0;
@@ -99,18 +113,225 @@ function getSplitterDir(baseDir, candIdx) {
   return (d + 3) & 3;
 }
 
+function nextProbeStamp() {
+  if (_probeStamp === 0xffffffff) {
+    _probeSeen.fill(0);
+    _probeStamp = 1;
+  } else {
+    _probeStamp++;
+  }
+  return _probeStamp;
+}
+
+/**
+ * Returns true if following committed `_target` links from `startTarget` reaches
+ * an empty cell or closes a cycle back to `splitterIdx`, without looping forever.
+ */
 function willProbeVacate(startTarget, splitterIdx, slotWafer, count) {
+  const stamp = nextProbeStamp();
   let probe = startTarget;
   let steps = 0;
-  const limit = Math.min(count, 64);
-  while (probe !== -1 && steps < limit) {
+  while (probe !== -1 && steps < count) {
     if (slotWafer[probe] === 0 || probe === splitterIdx) {
       return true;
     }
+    if (_probeSeen[probe] === stamp) {
+      return false;
+    }
+    _probeSeen[probe] = stamp;
     probe = _target[probe];
     steps++;
   }
   return false;
+}
+
+/**
+ * Iterative Tarjan SCC + empty-slot reachability across remaining uncommitted splitters.
+ * An uncommitted splitter branch `v` can vacate iff `v` reaches an empty cell or lies in
+ * the same SCC as the splitter (closing a multi-splitter cycle in O(N)).
+ */
+function runTarjanReachability(state, w, count, splitterCount) {
+  const { machineType, machineDir, slotWafer } = state;
+  for (let i = 0; i < count; i++) {
+    _tIndex[i] = -1;
+    _tOnStack[i] = 0;
+    _sccId[i] = -1;
+    _canReachEmpty[i] = 0;
+  }
+
+  let nextIndex = 0;
+  let nextScc = 0;
+  let tTop = 0;
+
+  for (let s = 0; s < splitterCount; s++) {
+    const root = _splitters[s];
+    if (_target[root] !== -1 || _tIndex[root] !== -1) continue;
+
+    _tIndex[root] = nextIndex;
+    _tLow[root] = nextIndex;
+    nextIndex++;
+    _tStack[tTop++] = root;
+    _tOnStack[root] = 1;
+    _dfsNode[0] = root;
+    _dfsEdge[0] = 0;
+    let dfsTop = 1;
+
+    while (dfsTop > 0) {
+      const sp = dfsTop - 1;
+      const u = _dfsNode[sp];
+      const eIdx = _dfsEdge[sp];
+
+      let v = -1;
+      let nextEdge = 3;
+      if (slotWafer[u] === 0) {
+        _canReachEmpty[u] = 1;
+      } else if (_target[u] !== -1) {
+        if (eIdx === 0) {
+          v = _target[u];
+          nextEdge = 1;
+        }
+      } else if (machineType[u] === MACHINE_TYPES.BELT_SPLITTER && _wantsMove[u] === 1) {
+        const baseDir = machineDir[u] & 3;
+        const ux = u % w;
+        const uy = (u / w) | 0;
+        const waferU = slotWafer[u];
+        for (let k = eIdx; k < 3; k++) {
+          const outDir = getSplitterDir(baseDir, k);
+          const nx = ux + DX[outDir];
+          const ny = uy + DY[outDir];
+          if (nx < 0 || nx >= w || ny < 0 || ny >= w) continue;
+          const cand = ny * w + nx;
+          if (canCellAcceptFrom(state, cand, outDir, waferU)) {
+            v = cand;
+            nextEdge = k + 1;
+            break;
+          }
+        }
+      }
+
+      if (v !== -1) {
+        _dfsEdge[sp] = nextEdge;
+        if (_tIndex[v] === -1) {
+          _tIndex[v] = nextIndex;
+          _tLow[v] = nextIndex;
+          nextIndex++;
+          _tStack[tTop++] = v;
+          _tOnStack[v] = 1;
+          _dfsNode[dfsTop] = v;
+          _dfsEdge[dfsTop] = 0;
+          dfsTop++;
+        } else {
+          if (_tOnStack[v] === 1 && _tIndex[v] < _tLow[u]) {
+            _tLow[u] = _tIndex[v];
+          }
+          if (_canReachEmpty[v] === 1) {
+            _canReachEmpty[u] = 1;
+          }
+        }
+      } else {
+        if (_tLow[u] === _tIndex[u]) {
+          let sccEmpty = 0;
+          const sccStart = tTop;
+          while (true) {
+            const wNode = _tStack[--tTop];
+            _tOnStack[wNode] = 0;
+            _sccId[wNode] = nextScc;
+            if (_canReachEmpty[wNode] === 1) {
+              sccEmpty = 1;
+            }
+            if (wNode === u) break;
+          }
+          if (sccEmpty === 1) {
+            for (let p = tTop; p < sccStart; p++) {
+              _canReachEmpty[_tStack[p]] = 1;
+            }
+          }
+          nextScc++;
+        }
+
+        dfsTop--;
+        if (dfsTop > 0) {
+          const parent = _dfsNode[dfsTop - 1];
+          if (_tLow[u] < _tLow[parent]) {
+            _tLow[parent] = _tLow[u];
+          }
+          if (_canReachEmpty[u] === 1) {
+            _canReachEmpty[parent] = 1;
+          }
+        }
+      }
+    }
+  }
+}
+
+function tryPickSplitterTarget(state, i, startK, w, count, mode) {
+  const { machineDir, slotWafer } = state;
+  const baseDir = machineDir[i] & 3;
+  const x = i % w;
+  const y = (i / w) | 0;
+  const waferI = slotWafer[i];
+
+  for (let k = 0; k < 3; k++) {
+    const candIdx = (startK + k) % 3;
+    const outDir = getSplitterDir(baseDir, candIdx);
+    const nx = x + DX[outDir];
+    const ny = y + DY[outDir];
+    if (nx < 0 || nx >= w || ny < 0 || ny >= w) continue;
+    const v = ny * w + nx;
+    if (!canCellAcceptFrom(state, v, outDir, waferI)) continue;
+
+    let ok = false;
+    if (mode === 0) {
+      ok = slotWafer[v] === 0;
+    } else if (mode === 1) {
+      ok = _target[v] !== -1 && willProbeVacate(_target[v], i, slotWafer, count);
+    } else {
+      ok = _canReachEmpty[v] === 1 || _sccId[v] === _sccId[i];
+    }
+
+    if (ok) {
+      _target[i] = v;
+      _chosenCand[i] = candIdx;
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Records `_cyclePred[node]` for every node on a directed cycle in `_target` (O(N)).
+ * Nodes in a saturated `_target` cycle must accept from their cycle predecessor in Phase 2b,
+ * because external feeders cannot enter a full cycle without breaking synchronous rotation.
+ */
+function computeCyclePredecessors(count) {
+  for (let start = 0; start < count; start++) {
+    if (_cycleColor[start] !== 0 || _target[start] === -1) continue;
+    let sp = 0;
+    let curr = start;
+    while (curr !== -1 && _cycleColor[curr] === 0) {
+      _cycleColor[curr] = 1;
+      _pathStack[sp++] = curr;
+      curr = _target[curr];
+    }
+    if (curr !== -1 && _cycleColor[curr] === 1) {
+      let cycleStart = -1;
+      for (let p = 0; p < sp; p++) {
+        if (_pathStack[p] === curr) {
+          cycleStart = p;
+          break;
+        }
+      }
+      if (cycleStart >= 0) {
+        for (let p = cycleStart; p < sp; p++) {
+          const node = _pathStack[p];
+          _cyclePred[node] = p === cycleStart ? _pathStack[sp - 1] : _pathStack[p - 1];
+        }
+      }
+    }
+    for (let p = 0; p < sp; p++) {
+      _cycleColor[_pathStack[p]] = 2;
+    }
+  }
 }
 
 /**
@@ -161,6 +382,8 @@ export function stepBeltsAndMachines(state, mods = {}) {
     _color[i] = 0;
     _movedOut[i] = 0;
     _movedIn[i] = 0;
+    _cycleColor[i] = 0;
+    _cyclePred[i] = -1;
 
     const type = machineType[i];
     const operates = type > MACHINE_TYPES.PILLAR && scramActive[i] === 0 && powerRatio[i] > 0;
@@ -327,11 +550,15 @@ export function stepBeltsAndMachines(state, mods = {}) {
     }
   }
 
-  // Phase 2a-1: Target selection for fixed-direction cells
+  // Phase 2a-1: Target selection for fixed-direction cells (and collect moving splitters)
+  let splitterCount = 0;
   for (let i = 0; i < count; i++) {
     if (_wantsMove[i] === 0) continue;
     const type = machineType[i];
-    if (type === MACHINE_TYPES.BELT_SPLITTER) continue;
+    if (type === MACHINE_TYPES.BELT_SPLITTER) {
+      _splitters[splitterCount++] = i;
+      continue;
+    }
 
     const outDir = getFixedOutputDir(type, machineDir[i], machineSub[i], slotDefective[i]);
     const nx = (i % w) + DX[outDir];
@@ -345,62 +572,42 @@ export function stepBeltsAndMachines(state, mods = {}) {
   }
 
   // Phase 2a-2: Target selection for BELT_SPLITTER (backpressure & cycle aware)
-  for (let i = 0; i < count; i++) {
-    if (_wantsMove[i] === 0 || machineType[i] !== MACHINE_TYPES.BELT_SPLITTER) {
-      continue;
-    }
-    const baseDir = machineDir[i] & 3;
-    const x = i % w;
-    const y = (i / w) | 0;
-
-    let startK = _splitterCursor[i] % 3;
-    if (hallucinationActive) {
-      const h = (Math.imul(state.tickCount + 1, 2654435761) ^ Math.imul(i + 1, 2246822519)) >>> 0;
-      startK = h % 3;
-    }
-
-    let chosenV = -1;
-    let chosenK = -1;
-
+  if (splitterCount > 0) {
     // Pass 1: Prefer an immediately empty accepting neighbor
-    for (let k = 0; k < 3; k++) {
-      const candIdx = (startK + k) % 3;
-      const outDir = getSplitterDir(baseDir, candIdx);
-      const nx = x + DX[outDir];
-      const ny = y + DY[outDir];
-      if (nx < 0 || nx >= w || ny < 0 || ny >= w) continue;
-      const v = ny * w + nx;
-      if (slotWafer[v] === 0 && canCellAcceptFrom(state, v, outDir, slotWafer[i])) {
-        chosenV = v;
-        chosenK = candIdx;
-        break;
+    for (let s = 0; s < splitterCount; s++) {
+      const i = _splitters[s];
+      let startK = _splitterCursor[i] % 3;
+      if (hallucinationActive) {
+        const h =
+          (Math.imul(state.tickCount + 1, 2654435761) ^ Math.imul(i + 1, 2246822519)) >>> 0;
+        startK = h % 3;
+      }
+      _splitterStartK[s] = startK;
+      tryPickSplitterTarget(state, i, startK, w, count, 0);
+    }
+
+    // Pass 2: Fall back to occupied accepting neighbors that vacate along committed targets
+    let hasUnresolved = false;
+    for (let s = 0; s < splitterCount; s++) {
+      const i = _splitters[s];
+      if (_target[i] !== -1) continue;
+      if (!tryPickSplitterTarget(state, i, _splitterStartK[s], w, count, 1)) {
+        hasUnresolved = true;
       }
     }
 
-    // Pass 2: Fall back to an occupied accepting neighbor that will vacate
-    if (chosenV === -1) {
-      for (let k = 0; k < 3; k++) {
-        const candIdx = (startK + k) % 3;
-        const outDir = getSplitterDir(baseDir, candIdx);
-        const nx = x + DX[outDir];
-        const ny = y + DY[outDir];
-        if (nx < 0 || nx >= w || ny < 0 || ny >= w) continue;
-        const v = ny * w + nx;
-        if (
-          canCellAcceptFrom(state, v, outDir, slotWafer[i]) &&
-          _target[v] !== -1 &&
-          willProbeVacate(_target[v], i, slotWafer, count)
-        ) {
-          chosenV = v;
-          chosenK = candIdx;
-          break;
-        }
+    // Pass 3: Resolve multi-splitter feedback cycles and paths via uncommitted splitters
+    if (hasUnresolved) {
+      runTarjanReachability(state, w, count, splitterCount);
+      for (let s = 0; s < splitterCount; s++) {
+        const i = _splitters[s];
+        if (_target[i] !== -1) continue;
+        tryPickSplitterTarget(state, i, _splitterStartK[s], w, count, 2);
       }
     }
-
-    _target[i] = chosenV;
-    _chosenCand[i] = chosenK;
   }
+
+  computeCyclePredecessors(count);
 
   // Phase 2b: In-degree arbitration so every node has in-degree <= 1 and out-degree <= 1
   for (let v = 0; v < count; v++) {
@@ -413,6 +620,7 @@ export function stepBeltsAndMachines(state, mods = {}) {
     const backSide = (vDir + 2) & 3;
     const leftSide = (vDir + 3) & 3;
     const rightSide = (vDir + 1) & 3;
+    const cycPred = _cyclePred[v];
 
     if (vType === MACHINE_TYPES.BELT_MERGER) {
       let s0 = backSide;
@@ -440,19 +648,23 @@ export function stepBeltsAndMachines(state, mods = {}) {
         }
       }
 
+      const matchCyc = cycPred !== -1;
       for (let step = 0; step < 3; step++) {
         const side = step === 0 ? s0 : step === 1 ? s1 : s2;
         const ux = vx + DX[side];
         const uy = vy + DY[side];
         if (ux < 0 || ux >= w || uy < 0 || uy >= w) continue;
         const u = uy * w + ux;
-        if (_target[u] === v) {
+        if (matchCyc ? u === cycPred : _target[u] === v) {
           _winnerIn[v] = u;
           _winnerOut[u] = v;
           _winnerOffset[v] = vSub === 0 ? (_mergerCursor[v] + step) % 3 : step;
           break;
         }
       }
+    } else if (cycPred !== -1) {
+      _winnerIn[v] = cycPred;
+      _winnerOut[cycPred] = v;
     } else {
       for (let step = 0; step < 4; step++) {
         const side =
@@ -559,7 +771,7 @@ export function stepBeltsAndMachines(state, mods = {}) {
 
   // Phase 2d: Advance arbitration cursors only on committed moves & track backpressure
   for (let i = 0; i < count; i++) {
-    if (_movedOut[i] === 1 && machineType[i] === MACHINE_TYPES.BELT_SPLITTER && _chosenCand[i] >= 0) {
+    if (machineType[i] === MACHINE_TYPES.BELT_SPLITTER && _chosenCand[i] >= 0) {
       _splitterCursor[i] = (_chosenCand[i] + 1) % 3;
     }
     if (
