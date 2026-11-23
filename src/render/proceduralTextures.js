@@ -760,6 +760,67 @@ function drawUtilityTextures(scene) {
   lctx.fillStyle = lg;
   lctx.fillRect(0, 0, 12, 42);
   registerCanvas(scene, 'vfx_laser', laser);
+
+  // VFX confetti diamond shard (10x10, bright white/cyan core for crisp WebGL tinting)
+  const confetti = createCanvas(10, 10);
+  const cctx = confetti.getContext('2d');
+  const cg = cctx.createRadialGradient(5, 5, 0.5, 5, 5, 5);
+  cg.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+  cg.addColorStop(0.5, 'rgba(220, 252, 255, 0.45)');
+  cg.addColorStop(1, 'rgba(220, 252, 255, 0)');
+  cctx.fillStyle = cg;
+  cctx.fillRect(0, 0, 10, 10);
+  tracePoly(cctx, [[5, 1], [8.5, 5], [5, 9], [1.5, 5]]);
+  cctx.fillStyle = '#FFFFFF';
+  cctx.fill();
+  tracePoly(cctx, [[5, 1.5], [8, 5], [5, 5]]);
+  cctx.fillStyle = '#DCF8FF';
+  cctx.fill();
+  registerCanvas(scene, 'vfx_confetti', confetti);
+
+  // VFX 4-point cleanroom laser flare star (18x18)
+  const star = createCanvas(18, 18);
+  const stctx = star.getContext('2d');
+  const stg = stctx.createRadialGradient(9, 9, 0.5, 9, 9, 8.5);
+  stg.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+  stg.addColorStop(0.35, 'rgba(232, 252, 255, 0.5)');
+  stg.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  stctx.fillStyle = stg;
+  stctx.fillRect(0, 0, 18, 18);
+  tracePoly(stctx, [
+    [9, 0.5], [10.6, 7.4], [17.5, 9], [10.6, 10.6],
+    [9, 17.5], [7.4, 10.6], [0.5, 9], [7.4, 7.4],
+  ]);
+  stctx.fillStyle = '#FFFFFF';
+  stctx.fill();
+  stctx.beginPath();
+  stctx.arc(9, 9, 2.0, 0, Math.PI * 2);
+  stctx.fillStyle = '#FFFFFF';
+  stctx.fill();
+  registerCanvas(scene, 'vfx_star', star);
+
+  // VFX vertical light beam pillar (20x72, white/cyan core for crisp tinting)
+  const beam = createCanvas(20, 72);
+  const bmctx = beam.getContext('2d');
+  const bmgH = bmctx.createLinearGradient(0, 0, 20, 0);
+  bmgH.addColorStop(0, 'rgba(255, 255, 255, 0)');
+  bmgH.addColorStop(0.28, 'rgba(220, 250, 255, 0.3)');
+  bmgH.addColorStop(0.5, 'rgba(255, 255, 255, 0.96)');
+  bmgH.addColorStop(0.72, 'rgba(220, 250, 255, 0.3)');
+  bmgH.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  bmctx.fillStyle = bmgH;
+  bmctx.fillRect(0, 0, 20, 72);
+  bmctx.globalCompositeOperation = 'destination-in';
+  const bmgV = bmctx.createLinearGradient(0, 0, 0, 72);
+  bmgV.addColorStop(0, 'rgba(255, 255, 255, 0)');
+  bmgV.addColorStop(0.22, 'rgba(255, 255, 255, 0.55)');
+  bmgV.addColorStop(0.68, 'rgba(255, 255, 255, 1)');
+  bmgV.addColorStop(0.92, 'rgba(255, 255, 255, 0.72)');
+  bmgV.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  bmctx.fillStyle = bmgV;
+  bmctx.fillRect(0, 0, 20, 72);
+  bmctx.globalCompositeOperation = 'source-over';
+  registerCanvas(scene, 'vfx_beam', beam);
 }
 
 export function getConduitTextureKey(kind, mask) {

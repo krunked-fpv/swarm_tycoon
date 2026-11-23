@@ -14,6 +14,9 @@ import {
   playEuvFlash,
   playShuttleLaunch,
   playPrestigeSwell,
+  playCelebrationFanfare,
+  playTransitionWhoosh,
+  playNodeUnlockPop,
 } from './machineFoley.js';
 import { playKlaxon } from './klaxonSynth.js';
 
@@ -358,6 +361,27 @@ export class AudioEngine {
   /** @returns {boolean} */
   playPrestigeSwell() {
     return this._canPlay() ? playPrestigeSwell(this._ctx, this._submix) : false;
+  }
+
+  /**
+   * @param {number} [intensity=1]
+   * @returns {boolean}
+   */
+  playCelebrationFanfare(intensity = 1) {
+    return this._canPlay() ? playCelebrationFanfare(this._ctx, this._submix, intensity) : false;
+  }
+
+  /** @returns {boolean} */
+  playTransitionWhoosh() {
+    return this._canPlay() ? playTransitionWhoosh(this._ctx, this._submix) : false;
+  }
+
+  /**
+   * @param {number} [step=0]
+   * @returns {boolean}
+   */
+  playNodeUnlockPop(step = 0) {
+    return this._canPlay() ? playNodeUnlockPop(this._ctx, this._submix, step) : false;
   }
 
   /**

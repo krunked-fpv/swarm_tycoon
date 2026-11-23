@@ -10,6 +10,7 @@ const COOLDOWN_CACHE = new WeakMap();
 const WAFER_STEP_CACHE = new WeakMap();
 
 const WAFER_PENTATONIC_HZ = [1046.5, 1174.66, 1318.51, 1567.98, 1318.51, 1174.66];
+const CELEBRATION_ARPEGGIO_HZ = [523.25, 659.25, 783.99, 1046.5, 1318.51, 1567.98];
 
 const COOLDOWN_SEC = {
   click: 0.025,
@@ -18,6 +19,9 @@ const COOLDOWN_SEC = {
   euv: 0.16,
   shuttle: 0.14,
   prestige: 0.9,
+  celebration: 0.35,
+  whoosh: 0.12,
+  nodePop: 0.03,
 };
 
 function wallClockMs() {
@@ -544,6 +548,219 @@ export function playPrestigeSwell(ctx, dest) {
     peakGain: 0.04,
     offsetSec: 0.11,
   });
+
+  return true;
+}
+
+/**
+ * Triumphant cleanroom arpeggio with warm triangle/sine shimmer + crisp highpass spark burst.
+ * @param {BaseAudioContext} ctx
+ * @param {AudioNode} [dest]
+ * @param {number} [intensity=1]
+ * @returns {boolean}
+ */
+export function playCelebrationFanfare(ctx, dest, intensity = 1) {
+  if (!isPlayableContext(ctx)) return false;
+  const out = getOutputNode(ctx, dest);
+  if (!out || !canTriggerFoley(ctx, 'celebration', COOLDOWN_SEC.celebration)) return false;
+
+  const t = Math.max(0, Number(ctx.currentTime) || 0);
+  const rawInt = Number.isFinite(Number(intensity)) ? Number(intensity) : 1;
+  const k = Math.max(0.5, Math.min(2.0, rawInt));
+  const ampScale = 0.85 + 0.15 * k;
+
+  const busFilter = ctx.createBiquadFilter();
+  busFilter.type = 'lowpass';
+  busFilter.Q.setValueAtTime(1.1, t);
+  busFilter.frequency.setValueAtTime(4800, t);
+  busFilter.frequency.exponentialRampToValueAtTime(2200, t + 0.95);
+
+  const busGain = ctx.createGain();
+  busGain.gain.setValueAtTime(1.0, t);
+
+  busFilter.connect(busGain);
+  busGain.connect(out);
+
+  for (let i = 0; i < CELEBRATION_ARPEGGIO_HZ.length; i++) {
+    const freq = CELEBRATION_ARPEGGIO_HZ[i];
+    const noteStart = t + i * 0.055;
+    const isLast = i === CELEBRATION_ARPEGGIO_HZ.length - 1;
+    const dur = isLast ? 0.68 : 0.34;
+
+    const tri = ctx.createOscillator();
+    tri.type = 'triangle';
+    tri.frequency.setValueAtTime(freq, noteStart);
+
+    const triGain = ctx.createGain();
+    triGain.gain.setValueAtTime(0.0001, noteStart);
+    triGain.gain.linearRampToValueAtTime(0.08 * ampScale, noteStart + 0.008);
+    triGain.gain.exponentialRampToValueAtTime(0.0001, noteStart + dur);
+
+    tri.connect(triGain);
+    triGain.connect(busFilter);
+    tri.start(noteStart);
+    tri.stop(noteStart + dur + 0.015);
+    scheduleAutoDisconnect(
+      tri,
+      isLast ? [tri, triGain, busFilter, busGain] : [tri, triGain]
+    );
+
+    const shim = ctx.createOscillator();
+    shim.type = 'sine';
+    shim.frequency.setValueAtTime(freq * 2.0, noteStart + 0.004);
+
+    const shimGain = ctx.createGain();
+    shimGain.gain.setValueAtTime(0.0001, noteStart + 0.004);
+    shimGain.gain.linearRampToValueAtTime(0.032 * ampScale, noteStart + 0.015);
+    shimGain.gain.exponentialRampToValueAtTime(0.0001, noteStart + dur * 0.88);
+
+    shim.connect(shimGain);
+    shimGain.connect(busFilter);
+    shim.start(noteStart + 0.004);
+    shim.stop(noteStart + dur);
+    scheduleAutoDisconnect(shim, [shim, shimGain]);
+  }
+
+  scheduleNoiseBurst(ctx, out, {
+    start: t + 0.02,
+    duration: 0.18,
+    filterType: 'highpass',
+    freqStart: 4200,
+    freqEnd: 6800,
+    q: 1.1,
+    peakGain: 0.058 * Math.min(1.35, k),
+    offsetSec: 0.08,
+  });
+
+  scheduleNoiseBurst(ctx, out, {
+    start: t + 0.275,
+    duration: 0.24,
+    filterType: 'highpass',
+    freqStart: 5400,
+    freqEnd: 8200,
+    q: 1.3,
+    peakGain: 0.072 * Math.min(1.35, k),
+    offsetSec: 0.31,
+  });
+
+  return true;
+}
+
+/**
+ * Smooth pneumatic cleanroom airlock sweep (220Hz -> 2600Hz -> 280Hz) + gentle sub-bass thump.
+ * @param {BaseAudioContext} ctx
+ * @param {AudioNode} [dest]
+ * @returns {boolean}
+ */
+export function playTransitionWhoosh(ctx, dest) {
+  if (!isPlayableContext(ctx)) return false;
+  const out = getOutputNode(ctx, dest);
+  if (!out || !canTriggerFoley(ctx, 'whoosh', COOLDOWN_SEC.whoosh)) return false;
+
+  const t = Math.max(0, Number(ctx.currentTime) || 0);
+
+  const buf = getWhiteNoiseBuffer(ctx);
+  if (buf) {
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.Q.setValueAtTime(1.8, t);
+    filter.frequency.setValueAtTime(220, t);
+    filter.frequency.exponentialRampToValueAtTime(2600, t + 0.13);
+    filter.frequency.exponentialRampToValueAtTime(280, t + 0.34);
+
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.0001, t);
+    noiseGain.gain.linearRampToValueAtTime(0.145, t + 0.12);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.34);
+
+    src.connect(filter);
+    filter.connect(noiseGain);
+    noiseGain.connect(out);
+    src.start(t, 0.12);
+    src.stop(t + 0.355);
+    scheduleAutoDisconnect(src, [src, filter, noiseGain]);
+  }
+
+  const subOsc = ctx.createOscillator();
+  subOsc.type = 'sine';
+  subOsc.frequency.setValueAtTime(118, t);
+  subOsc.frequency.exponentialRampToValueAtTime(44, t + 0.14);
+
+  const subFilter = ctx.createBiquadFilter();
+  subFilter.type = 'lowpass';
+  subFilter.frequency.setValueAtTime(220, t);
+
+  const subGain = ctx.createGain();
+  subGain.gain.setValueAtTime(0.0001, t);
+  subGain.gain.linearRampToValueAtTime(0.15, t + 0.006);
+  subGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+
+  subOsc.connect(subFilter);
+  subFilter.connect(subGain);
+  subGain.connect(out);
+  subOsc.start(t);
+  subOsc.stop(t + 0.17);
+  scheduleAutoDisconnect(subOsc, [subOsc, subFilter, subGain]);
+
+  return true;
+}
+
+/**
+ * Escalating harmonic bubble chime (440 * 1.12246^(step % 12) Hz) for node taps & arcade hits.
+ * @param {BaseAudioContext} ctx
+ * @param {AudioNode} [dest]
+ * @param {number} [step=0]
+ * @returns {boolean}
+ */
+export function playNodeUnlockPop(ctx, dest, step = 0) {
+  if (!isPlayableContext(ctx)) return false;
+  const out = getOutputNode(ctx, dest);
+  if (!out || !canTriggerFoley(ctx, 'nodePop', COOLDOWN_SEC.nodePop)) return false;
+
+  const t = Math.max(0, Number(ctx.currentTime) || 0);
+  const safeStep = Number.isFinite(Number(step)) ? Math.max(0, Math.floor(Number(step))) : 0;
+  const baseHz = 440 * Math.pow(1.12246, safeStep % 12);
+
+  const popOsc = ctx.createOscillator();
+  popOsc.type = 'sine';
+  popOsc.frequency.setValueAtTime(baseHz * 0.72, t);
+  popOsc.frequency.exponentialRampToValueAtTime(baseHz, t + 0.022);
+
+  const popGain = ctx.createGain();
+  popGain.gain.setValueAtTime(0.0001, t);
+  popGain.gain.linearRampToValueAtTime(0.13, t + 0.004);
+  popGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+
+  popOsc.connect(popGain);
+  popGain.connect(out);
+  popOsc.start(t);
+  popOsc.stop(t + 0.15);
+  scheduleAutoDisconnect(popOsc, [popOsc, popGain]);
+
+  const harmOsc = ctx.createOscillator();
+  harmOsc.type = 'triangle';
+  harmOsc.frequency.setValueAtTime(baseHz * 2.0, t + 0.008);
+
+  const harmFilter = ctx.createBiquadFilter();
+  harmFilter.type = 'bandpass';
+  harmFilter.frequency.setValueAtTime(baseHz * 2.0, t + 0.008);
+  harmFilter.Q.setValueAtTime(1.6, t + 0.008);
+
+  const harmGain = ctx.createGain();
+  harmGain.gain.setValueAtTime(0.0001, t + 0.008);
+  harmGain.gain.linearRampToValueAtTime(0.048, t + 0.016);
+  harmGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.165);
+
+  harmOsc.connect(harmFilter);
+  harmFilter.connect(harmGain);
+  harmGain.connect(out);
+  harmOsc.start(t + 0.008);
+  harmOsc.stop(t + 0.175);
+  scheduleAutoDisconnect(harmOsc, [harmOsc, harmFilter, harmGain]);
 
   return true;
 }
