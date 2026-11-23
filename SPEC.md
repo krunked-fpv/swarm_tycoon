@@ -99,7 +99,7 @@ Starter Tier 01 supplies `15.0 kW` at facility substation anchor `(0, 0)` (and a
 - `shuttles: Array<{ id, x, y, targetX, targetY, carryingWafer, carryingDefective, progress, state }>`
 
 ### 3.4 `GridEngine` & Companion Module APIs
-- `beltRouter.js`: `stepBeltsAndMachines(state, mods)` — `O(N)` 3-color traversal + closed-cycle synchronous rotation without deadlocks or item deletion; returns `{ vaultedGood, vaultedProto, reclaimedCount, euvFlashes, completedWafers }`.
+- `beltRouter.js`: `stepBeltsAndMachines(state, mods)` — `O(N)` 3-color traversal, Tarjan SCC reachability (`runTarjanReachability`), cycle-predecessor prioritization (`computeCyclePredecessors`), and closed-cycle synchronous rotation without deadlocks or item deletion; returns `{ vaultedGood, vaultedProto, reclaimedCount, euvFlashes, completedWafers }`.
 - `shuttleFleet.js`: `stepShuttles(state, mods)` — dispatches overhead FOUP shuttles between `FOUP_DOCK` (`sub=0` / `shuttleWaypoint=1`) and `FOUP_DOCK` (`sub=1` / `shuttleWaypoint=2`).
 - `cryoLoopSolver.js`: `stepCryoLoops(state, mods)` — identifies connected `ln2Mask` pipe components, detects closed cycles (`+25%` flow bonus), computes exponential relaxation toward steady-state Kelvin (`[77K, 1200K]`), applies thermal multipliers (`<285K -> 1.15`, `285..335K -> 1.0`, `335..scramCeilingK -> 1.0..0.2`, `scramActive -> 0.0`), and updates hysteresis scrams (`>390K` ON, `<320K` OFF).
 - `powerGridSolver.js`: `stepPowerGrid(state, mods)` — aggregates facility + `POWER_SOURCE` supply + `CAPACITOR_BANK` charge/discharge (`capacitorStoredKj`), sheds Priority 3 -> Priority 2 -> Priority 1 on deficit, and returns `{ powerSupplyKw, powerDemandKw, capacitorStoredKj, capacitorMaxKj, brownoutLevel }`.
@@ -178,13 +178,14 @@ Binary byte layout:
 
 ---
 
-## 6. Renderer & WebAudio Contracts
-- **`IsoCleanroomScene` (`src/render/isoScene.js`)**:
-  - `constructor(hooks)` (`hooks: { getGridEngine, getEconomyState, onTileAction, onHoverTile }`)
-  - `setHeatmapMode(mode)` (`0=Off, 1=Thermal, 2=Backpressure, 3=Power`)
-  - `setToolState(tool)` (`{ toolId, dir, sub }`)
-  - `syncGridSize()`, `triggerPrestigeVfx()`, `centerCamera()`, `getMeasuredFps()`
+## 6. Renderer, WebAudio & Command Deck Contracts
+- **`IsoCleanroomScene` / `createCleanroomGame(containerEl, hooks)` (`src/render/isoScene.js`)**:
+  - `hooks: { getGridEngine, getEconomyState, onTileAction, onHoverTile }`
+  - Returned controller methods: `setHeatmapMode(mode)` (`0=Off, 1=Thermal, 2=Backpressure, 3=Power`), `setToolState(tool)` (`{ toolId, dir, sub }`), `syncGridSize()`, `triggerPrestigeVfx()`, `centerCamera()`, `getMeasuredFps()`, `destroy()`
 - **`AudioEngine` (`src/audio/audioEngine.js`)**:
-  - `unlock()`, `setMasterVolume(v)`, `setMuted(muted)`, `getState()`
+  - `unlock()`, `setMasterVolume(v)`, `setMuted(muted)`
+  - `getState()` -> `{ unlocked, vol, mute, volume, muted, contextState }`
   - `updateTelemetry({ totalMw, brownoutLevel, activeCrisis, scramCount })`
   - `playClick()`, `playPlace()`, `playWaferComplete()`, `playEuvFlash()`, `playShuttleLaunch()`, `playPrestigeSwell()`, `playKlaxon(kind)`
+- **Command Deck Diagnostics (`src/main.js`, `src/ui/blueprintModal.js`, `index.html`)**:
+  - `#fps-telemetry-pill` (120-frame rolling rAF FPS), `#sw-telemetry-pill` (`./sw.js` lifecycle), `#vault-status-pill` (`HEALED: cookie-vault` / `REGEN: cookie-vault`), `window.__SWARM_TYCOON__` diagnostic handle, and reload wipe drills (`#btn-drill-wipe-primary`, `#btn-drill-wipe-cookie`).
