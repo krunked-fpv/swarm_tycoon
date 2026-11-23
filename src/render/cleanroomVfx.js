@@ -3,13 +3,14 @@
  * Zero per-frame allocations via pre-allocated sprite pools + TypedArray physics buffers.
  */
 
-const MAX_PARTICLES = 180;
-const MAX_RINGS = 12;
+const MAX_PARTICLES = 360;
+const MAX_RINGS = 24;
 
 const TINT_CYAN = 0x00F0FF;
 const TINT_FROST = 0x38BDF8;
 const TINT_GOLD = 0xFFB800;
 const TINT_CRIMSON = 0xFF3B5C;
+const TINT_EMERALD = 0x10F5A0;
 
 export class CleanroomVfxPool {
   constructor(scene, layer) {
@@ -21,6 +22,9 @@ export class CleanroomVfxPool {
     this._y = new Float32Array(MAX_PARTICLES);
     this._vx = new Float32Array(MAX_PARTICLES);
     this._vy = new Float32Array(MAX_PARTICLES);
+    this._ay = new Float32Array(MAX_PARTICLES);
+    this._rot = new Float32Array(MAX_PARTICLES);
+    this._vRot = new Float32Array(MAX_PARTICLES);
     this._drag = new Float32Array(MAX_PARTICLES);
     this._life = new Float32Array(MAX_PARTICLES);
     this._maxLife = new Float32Array(MAX_PARTICLES);
@@ -81,7 +85,7 @@ export class CleanroomVfxPool {
     }
   }
 
-  _emitParticle(texKey, x, y, vx, vy, drag, maxLife, scale0, scale1, alpha0, tint) {
+  _emitParticle(texKey, x, y, vx, vy, drag, maxLife, scale0, scale1, alpha0, tint, ay = 0, rot0 = 0, vRot = 0) {
     if (this._freeTop <= 0) return;
     const idx = this._freeStack[--this._freeTop];
     const sp = this._sprites[idx];
@@ -93,6 +97,7 @@ export class CleanroomVfxPool {
     sp.setScale(scale0);
     sp.setAlpha(alpha0);
     sp.setTint(tint);
+    sp.setRotation?.(rot0);
     sp.setVisible(true);
     sp.setActive(true);
 
@@ -100,6 +105,9 @@ export class CleanroomVfxPool {
     this._y[idx] = y;
     this._vx[idx] = vx;
     this._vy[idx] = vy;
+    this._ay[idx] = ay;
+    this._rot[idx] = rot0;
+    this._vRot[idx] = vRot;
     this._drag[idx] = drag;
     this._life[idx] = 0;
     this._maxLife[idx] = maxLife;
@@ -217,6 +225,123 @@ export class CleanroomVfxPool {
     }
   }
 
+  /**
+   * Snappy expanding cyan ring + 8 crisp cyan/gold sparks when a tile/machine/pipe is placed.
+   */
+  spawnPlacementBurst(wx, wy) {
+    this._emitRing(wx, wy - 4, 0.28, 0.2, 0.9, 0.9, TINT_CYAN);
+    for (let i = 0; i < 8; i++) {
+      const ang = (i / 8) * Math.PI * 2 + (this._rand() - 0.5) * 0.22;
+      const spd = 34 + this._rand() * 34;
+      this._emitParticle(
+        'vfx_spark',
+        wx,
+        wy - 8,
+        Math.cos(ang) * spd,
+        Math.sin(ang) * spd * 0.52 - 14,
+        0.9,
+        0.28 + this._rand() * 0.08,
+        0.62,
+        0.08,
+        0.95,
+        i % 3 === 0 ? TINT_GOLD : TINT_CYAN,
+        35
+      );
+    }
+  }
+
+  /**
+   * Bright golden flare star + 4 upward confetti shards when a finished wafer enters WAFER_VAULT.
+   */
+  spawnVaultJackpot(wx, wy) {
+    this._emitParticle(
+      'vfx_star',
+      wx,
+      wy - 28,
+      0,
+      -12,
+      0.92,
+      0.46,
+      1.3,
+      0.18,
+      1.0,
+      TINT_GOLD,
+      0,
+      0,
+      2.6
+    );
+    for (let i = 0; i < 4; i++) {
+      const vx = (this._rand() - 0.5) * 72;
+      const vy = -68 - this._rand() * 48;
+      this._emitParticle(
+        'vfx_confetti',
+        wx + (this._rand() - 0.5) * 10,
+        wy - 20,
+        vx,
+        vy,
+        0.965,
+        0.72 + this._rand() * 0.22,
+        0.85,
+        0.3,
+        0.98,
+        i % 2 === 0 ? TINT_GOLD : TINT_CYAN,
+        185,
+        this._rand() * Math.PI * 2,
+        (this._rand() - 0.5) * 10
+      );
+    }
+  }
+
+  /**
+   * Exuberant celebration shockwave + 3 vertical light pillars + 64-96 arcing confetti & star particles.
+   */
+  triggerCelebrationVfx(wx, wy, intensity = 1) {
+    const k = Math.max(0.5, Math.min(2.0, Number.isFinite(Number(intensity)) ? Number(intensity) : 1));
+    const ringScale = 0.8 + 0.25 * k;
+
+    this._emitRing(wx, wy, 0.90, 0.35, 8.0 * ringScale, 0.96, TINT_CYAN);
+    this._emitRing(wx, wy, 0.75, 0.28, 6.2 * ringScale, 0.92, TINT_GOLD);
+    this._emitRing(wx, wy, 1.15, 0.45, 10.5 * ringScale, 0.80, TINT_FROST);
+
+    // 3 vertical light beam pillars
+    this._emitParticle('vfx_beam', wx, wy - 44, 0, -18, 0.96, 0.95, 1.45 * k, 0.4, 0.95, TINT_GOLD, 0, 0, 0);
+    this._emitParticle('vfx_beam', wx - 56, wy - 28, -6, -14, 0.96, 0.85, 1.15 * k, 0.32, 0.86, TINT_CYAN, 0, 0, 0);
+    this._emitParticle('vfx_beam', wx + 56, wy - 28, 6, -14, 0.96, 0.85, 1.15 * k, 0.32, 0.86, TINT_FROST, 0, 0, 0);
+
+    // 64..96 arcing confetti shards & star flares radiating across the cleanroom
+    const count = Math.round(64 + 32 * ((k - 0.5) / 1.5));
+    for (let i = 0; i < count; i++) {
+      const isStar = (i & 3) === 0;
+      const texKey = isStar ? 'vfx_star' : 'vfx_confetti';
+      const ang = (i / count) * Math.PI * 2 + (this._rand() - 0.5) * 0.28;
+      const spd = (55 + this._rand() * 145) * (0.85 + 0.25 * k);
+      const vx = Math.cos(ang) * spd;
+      const vy = Math.sin(ang) * spd * 0.42 - (95 + this._rand() * 125);
+      const ay = isStar ? 140 : 210 + this._rand() * 90;
+      const maxLife = (isStar ? 0.85 : 1.15) + this._rand() * 0.55;
+      const tint = (i & 3) === 0 ? TINT_GOLD : (i & 3) === 1 ? TINT_CYAN : (i & 3) === 2 ? TINT_FROST : TINT_EMERALD;
+      const scale0 = isStar ? 0.85 + this._rand() * 0.45 : 0.95 + this._rand() * 0.45;
+      const scale1 = isStar ? 0.14 : 0.35;
+
+      this._emitParticle(
+        texKey,
+        wx + (this._rand() - 0.5) * 24,
+        wy - 10 + (this._rand() - 0.5) * 12,
+        vx,
+        vy,
+        0.975,
+        maxLife,
+        scale0,
+        scale1,
+        0.98,
+        tint,
+        ay,
+        this._rand() * Math.PI * 2,
+        (this._rand() - 0.5) * 9
+      );
+    }
+  }
+
   update(dtSec) {
     const dt = Math.min(0.05, Math.max(0, dtSec));
     if (dt <= 0) return;
@@ -241,7 +366,7 @@ export class CleanroomVfxPool {
       const t = life / maxLife;
       const damp = Math.pow(this._drag[i], dragPow);
       const vx = this._vx[i] * damp;
-      const vy = this._vy[i] * damp;
+      const vy = (this._vy[i] + this._ay[i] * dt) * damp;
       this._vx[i] = vx;
       this._vy[i] = vy;
 
@@ -252,6 +377,11 @@ export class CleanroomVfxPool {
 
       const sp = this._sprites[i];
       sp.setPosition(x, y);
+      if (this._vRot[i] !== 0) {
+        const rot = this._rot[i] + this._vRot[i] * dt;
+        this._rot[i] = rot;
+        sp.setRotation?.(rot);
+      }
       sp.setScale(this._scale0[i] + (this._scale1[i] - this._scale0[i]) * t);
       sp.setAlpha(this._alpha0[i] * (1 - t));
     }

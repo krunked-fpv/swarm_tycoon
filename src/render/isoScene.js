@@ -32,6 +32,7 @@ export const HALF_H = TILE_H * 0.5;
 const MAX_GRID_DIM = 28;
 const MAX_CELLS = MAX_GRID_DIM * MAX_GRID_DIM; // 784
 const MAX_SHUTTLES = 32;
+const PLACE_POP_DUR = 0.24;
 
 const DX = [0, 1, 0, -1];
 const DY = [-1, 0, 1, 0];
@@ -109,16 +110,22 @@ function installCleanroomMethods(targetProto) {
       this._gridSize = 8;
       this._booted = false;
       this._destroyed = false;
+      this._hasSyncedOnce = false;
 
       // Measured FPS EMA
       this._fpsEma = 60;
       this._simTimeSec = 0;
+      this._zoomPunch = 0;
 
       // Hover & camera gesture state
       this._hoverGx = -1;
       this._hoverGy = -1;
       this._isDragging = false;
       this._wasPinching = false;
+      this._paintDragMode = false;
+      this._lastPaintedGx = -1;
+      this._lastPaintedGy = -1;
+      this._paintedThisStroke = false;
       this._pinchDist0 = 0;
       this._pinchZoom0 = 1;
       this._downX = 0;
@@ -141,7 +148,8 @@ function installCleanroomMethods(targetProto) {
       this._prevFloorVariant = new Int8Array(MAX_CELLS).fill(-1);
       this._prevPowerMask = new Int16Array(MAX_CELLS).fill(-1);
       this._prevLn2Mask = new Int16Array(MAX_CELLS).fill(-1);
-      this._prevMachineKey = new Int32Array(MAX_CELLS).fill(-1);
+      this._prevMachineKey = new Int16Array(MAX_CELLS).fill(-1);
+      this._placePopAge = new Float32Array(MAX_CELLS);
       this._prevWaferKey = new Int16Array(MAX_CELLS).fill(-1);
       this._prevSlotWafer = new Uint8Array(MAX_CELLS);
       this._prevSlotDefective = new Uint8Array(MAX_CELLS);
@@ -149,6 +157,12 @@ function installCleanroomMethods(targetProto) {
       this._waferSlideAge = new Float32Array(MAX_CELLS);
       this._euvCooldown = new Float32Array(MAX_CELLS);
       this._cryoCooldown = new Float32Array(MAX_CELLS);
+
+      this._prevVaultedGood = -1;
+      this._vaultJackpotCooldown = 0;
+      this._vaultCursor = 0;
+      this._vaultGx = new Int16Array(MAX_CELLS);
+      this._vaultGy = new Int16Array(MAX_CELLS);
 
       this._dockSignature = -1;
       this._perimeterSignature = '';
@@ -303,18 +317,35 @@ function installCleanroomMethods(targetProto) {
         if (p1?.isDown && p2?.isDown) {
           this._wasPinching = true;
           this._isDragging = true;
+          this._lastPaintedGx = -1;
+          this._lastPaintedGy = -1;
+          this._paintedThisStroke = false;
           this._pinchDist0 = Math.hypot(p1.x - p2.x, p1.y - p2.y) || 1;
-          this._pinchZoom0 = cam.zoom;
+          this._pinchZoom0 = clamp((cam.zoom || 1) - this._zoomPunch, 0.45, 2.5);
+          this._zoomPunch = 0;
           return;
         }
 
         this._wasPinching = false;
         this._isDragging = false;
+        this._lastPaintedGx = -1;
+        this._lastPaintedGy = -1;
+        this._paintedThisStroke = false;
         this._downX = pointer.x;
         this._downY = pointer.y;
         this._downButton = pointer.button || 0;
         this._camStartX = cam.scrollX;
         this._camStartY = cam.scrollY;
+
+        const isPrimary =
+          pointer.button !== 1 &&
+          pointer.button !== 2 &&
+          !pointer.middleButtonDown?.() &&
+          !pointer.rightButtonDown?.();
+        if (this._paintDragMode && isPrimary && this._toolState.kind !== 'select') {
+          this._paintAtPointer(pointer);
+          this._paintedThisStroke = true;
+        }
       });
 
       this.input.on('pointermove', (pointer) => {
@@ -325,13 +356,35 @@ function installCleanroomMethods(targetProto) {
         if (p1?.isDown && p2?.isDown) {
           this._wasPinching = true;
           this._isDragging = true;
+          this._lastPaintedGx = -1;
+          this._lastPaintedGy = -1;
           const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y) || 1;
           const nextZoom = clamp(this._pinchZoom0 * (dist / this._pinchDist0), 0.45, 2.5);
+          this._zoomPunch = 0;
           cam.setZoom(nextZoom);
           return;
         }
 
+        if (this._wasPinching) {
+          this._updateHoverFromPointer(pointer);
+          return;
+        }
+
         if (pointer.isDown) {
+          const isPrimary =
+            this._downButton !== 1 &&
+            this._downButton !== 2 &&
+            pointer.button !== 2 &&
+            !pointer.middleButtonDown?.() &&
+            !pointer.rightButtonDown?.();
+          if (this._paintDragMode && isPrimary && this._toolState.kind !== 'select') {
+            this._isDragging = true;
+            this._paintAtPointer(pointer);
+            this._paintedThisStroke = true;
+            this._updateHoverFromPointer(pointer);
+            return;
+          }
+
           const dx = pointer.x - this._downX;
           const dy = pointer.y - this._downY;
           const isPanBtn = pointer.middleButtonDown() || pointer.rightButtonDown();
@@ -353,11 +406,14 @@ function installCleanroomMethods(targetProto) {
           if (!p1?.isDown && !p2?.isDown) {
             this._wasPinching = false;
             this._isDragging = false;
+            this._lastPaintedGx = -1;
+            this._lastPaintedGy = -1;
+            this._paintedThisStroke = false;
           }
           return;
         }
 
-        if (!this._isDragging) {
+        if (!this._isDragging && !this._paintedThisStroke) {
           const worldPt = cam.getWorldPoint(pointer.x, pointer.y);
           const { gx, gy } = screenToIso(worldPt);
           const simState = this._getSimState();
@@ -368,6 +424,9 @@ function installCleanroomMethods(targetProto) {
           }
         }
         this._isDragging = false;
+        this._paintedThisStroke = false;
+        this._lastPaintedGx = -1;
+        this._lastPaintedGy = -1;
       });
 
       this.input.on('wheel', (pointer, _objs, _dx, deltaY) => {
@@ -417,6 +476,35 @@ function installCleanroomMethods(targetProto) {
       }
     },
 
+    _paintAtPointer(pointer) {
+      const cam = this.cameras?.main;
+      if (!cam || !pointer) return;
+      const worldPt = cam.getWorldPoint(pointer.x, pointer.y);
+      const { gx, gy } = screenToIso(worldPt);
+      const simState = this._getSimState();
+      const dim = clamp(simState?.width || this._gridSize || 8, 8, MAX_GRID_DIM);
+      if (gx >= 0 && gx < dim && gy >= 0 && gy < dim) {
+        if (gx !== this._lastPaintedGx || gy !== this._lastPaintedGy) {
+          this._lastPaintedGx = gx;
+          this._lastPaintedGy = gy;
+          this._hooks?.onTileAction?.(gx, gy, 0);
+        }
+      }
+    },
+
+    setPaintDragMode(enabled) {
+      this._paintDragMode = Boolean(enabled);
+      if (!this._paintDragMode) {
+        this._lastPaintedGx = -1;
+        this._lastPaintedGy = -1;
+        this._paintedThisStroke = false;
+      }
+    },
+
+    getPaintDragMode() {
+      return Boolean(this._paintDragMode);
+    },
+
     setHeatmapMode(mode) {
       const m = clamp(mode | 0, 0, 3);
       this._heatmapMode = m;
@@ -449,10 +537,16 @@ function installCleanroomMethods(targetProto) {
             if (fl.visible) fl.setVisible(false);
             this._powerPool[i].setVisible(false);
             this._ln2Pool[i].setVisible(false);
-            this._machinePool[i].setVisible(false);
+            const mcSp = this._machinePool[i];
+            mcSp.setVisible(false);
+            if (mcSp.scaleX !== 1 || mcSp.scaleY !== 1) mcSp.setScale(1);
             this._waferPool[i].setVisible(false);
             this._beaconPool[i].setVisible(false);
             this._heatmapPool[i].setVisible(false);
+            this._placePopAge[i] = 0;
+            this._prevMachineKey[i] = -1;
+            this._prevPowerMask[i] = -1;
+            this._prevLn2Mask[i] = -1;
             continue;
           }
 
@@ -469,9 +563,14 @@ function installCleanroomMethods(targetProto) {
       this._prevSlotDefective.fill(0);
       this._prevScram.fill(0);
       this._waferSlideAge.fill(0);
+      this._placePopAge.fill(0);
       this._perimeterSignature = '';
       this._dockSignature = -1;
       if (prevDim !== dim) {
+        if (dim < prevDim) {
+          this._hasSyncedOnce = false;
+          this._prevVaultedGood = -1;
+        }
         this.centerCamera();
       }
     },
@@ -486,6 +585,7 @@ function installCleanroomMethods(targetProto) {
       const vw = cam.width || this.scale?.width || 1280;
       const vh = cam.height || this.scale?.height || 720;
       const fitZoom = clamp(Math.min(vw / (gridPixelW * 1.2), vh / (gridPixelH * 1.32)), 0.5, 1.65);
+      this._zoomPunch = 0;
       cam.setZoom(fitZoom);
       cam.centerOn(center.x, center.y - 8);
     },
@@ -495,6 +595,23 @@ function installCleanroomMethods(targetProto) {
       const dim = clamp(this._gridSize || 8, 8, MAX_GRID_DIM);
       const center = isoToScreen((dim - 1) * 0.5, (dim - 1) * 0.5);
       this._vfx.triggerPrestigeVfx(center.x, center.y);
+    },
+
+    triggerCelebrationVfx(intensity = 1) {
+      const rawInt = Number.isFinite(Number(intensity)) ? Math.max(0, Number(intensity)) : 1;
+      const k = clamp(rawInt || 1, 0.5, 2.0);
+      const dim = clamp(this._gridSize || 8, 8, MAX_GRID_DIM);
+      const center = isoToScreen((dim - 1) * 0.5, (dim - 1) * 0.5);
+
+      this._vfx?.triggerCelebrationVfx(center.x, center.y, k);
+
+      const cam = this.cameras?.main;
+      if (cam) {
+        const baseZoom = clamp((cam.zoom || 1) - this._zoomPunch, 0.45, 2.5);
+        this._zoomPunch = 0.06 * k;
+        cam.setZoom?.(clamp(baseZoom + this._zoomPunch, 0.45, 2.65));
+        cam.shake?.(180, 0.004 * Math.min(2, rawInt));
+      }
     },
 
     getMeasuredFps() {
@@ -528,6 +645,18 @@ function installCleanroomMethods(targetProto) {
         this._syncSectorPerimeter(dim, null, econState);
       }
 
+      if (this._zoomPunch > 0) {
+        const cam = this.cameras?.main;
+        if (cam) {
+          const baseZoom = clamp((cam.zoom || 1) - this._zoomPunch, 0.45, 2.5);
+          const nextPunch = this._zoomPunch * Math.exp(-dtSec / 0.085);
+          this._zoomPunch = nextPunch < 0.0004 ? 0 : nextPunch;
+          cam.setZoom?.(clamp(baseZoom + this._zoomPunch, 0.45, 2.65));
+        } else {
+          this._zoomPunch = 0;
+        }
+      }
+
       this._syncHoverReticle(simState, dim);
       this._vfx?.update(dtSec);
     },
@@ -550,14 +679,17 @@ function installCleanroomMethods(targetProto) {
       const tNow = this._simTimeSec;
       const heatmapMode = this._heatmapMode;
       const showHeat = heatmapMode !== HEATMAP_MODES.OFF;
+      const hasSynced = this._hasSyncedOnce;
       let visibleWafers = 0;
       let alertAccum = 0;
       let dockSig = 17;
+      let vaultCount = 0;
 
       for (let gy = 0; gy < dim; gy++) {
         for (let gx = 0; gx < dim; gx++) {
           const simIdx = gy * dim + gx;
           const poolIdx = gy * MAX_GRID_DIM + gx;
+          let burstPlaced = false;
 
           // 1. Power busbar overlay
           const pMask = powerMask ? powerMask[simIdx] : 0;
@@ -568,9 +700,16 @@ function installCleanroomMethods(targetProto) {
               this._prevPowerMask[poolIdx] = pConn;
               pwSp.setTexture(getConduitTextureKey('power', pConn));
             }
-            if (!pwSp.visible) pwSp.setVisible(true);
-          } else if (pwSp.visible) {
-            pwSp.setVisible(false);
+            if (!pwSp.visible) {
+              pwSp.setVisible(true);
+              if (hasSynced && !burstPlaced) {
+                burstPlaced = true;
+                this._vfx?.spawnPlacementBurst((gx - gy) * HALF_W, (gx + gy) * HALF_H);
+              }
+            }
+          } else {
+            this._prevPowerMask[poolIdx] = -1;
+            if (pwSp.visible) pwSp.setVisible(false);
           }
 
           // 2. LN2 Cryo loop overlay
@@ -582,9 +721,16 @@ function installCleanroomMethods(targetProto) {
               this._prevLn2Mask[poolIdx] = lConn;
               lnSp.setTexture(getConduitTextureKey('ln2', lConn));
             }
-            if (!lnSp.visible) lnSp.setVisible(true);
-          } else if (lnSp.visible) {
-            lnSp.setVisible(false);
+            if (!lnSp.visible) {
+              lnSp.setVisible(true);
+              if (hasSynced && !burstPlaced) {
+                burstPlaced = true;
+                this._vfx?.spawnPlacementBurst((gx - gy) * HALF_W, (gx + gy) * HALF_H);
+              }
+            }
+          } else {
+            this._prevLn2Mask[poolIdx] = -1;
+            if (lnSp.visible) lnSp.setVisible(false);
           }
 
           // 3. Machine / Belt sprite
@@ -604,6 +750,12 @@ function installCleanroomMethods(targetProto) {
             dockSig = ((dockSig * 31) ^ ((gx << 8) | (gy << 2) | wp)) | 0;
           }
 
+          if (mType === 11 && !scram && pRatio > 0.01 && vaultCount < MAX_CELLS) {
+            this._vaultGx[vaultCount] = gx;
+            this._vaultGy[vaultCount] = gy;
+            vaultCount++;
+          }
+
           if (mType > 0) {
             const keyCode = (mType << 8) | (mDir << 2) | mSub;
             if (this._prevMachineKey[poolIdx] !== keyCode) {
@@ -617,8 +769,38 @@ function installCleanroomMethods(targetProto) {
               } else if (!isBelt && mcSp.displayList !== this._machineLayer) {
                 this._machineLayer.add(mcSp);
               }
+              if (hasSynced && mType >= 2) {
+                this._placePopAge[poolIdx] = PLACE_POP_DUR;
+                if (!burstPlaced) {
+                  burstPlaced = true;
+                  this._vfx?.spawnPlacementBurst((gx - gy) * HALF_W, (gx + gy) * HALF_H);
+                }
+              }
             }
             if (!mcSp.visible) mcSp.setVisible(true);
+
+            // Spring overshoot bounce (0.55 -> 1.18 -> 1.0 over 0.24s)
+            const popRem = this._placePopAge[poolIdx];
+            if (popRem > 0) {
+              const nextRem = Math.max(0, popRem - dtSec);
+              this._placePopAge[poolIdx] = nextRem;
+              if (nextRem <= 0) {
+                mcSp.setScale(1);
+              } else {
+                const p = 1 - nextRem / PLACE_POP_DUR;
+                let s;
+                if (p < 0.55) {
+                  const u = p / 0.55;
+                  s = 0.55 + 0.63 * (1 - (1 - u) * (1 - u));
+                } else {
+                  const u = (p - 0.55) / 0.45;
+                  s = 1.18 - 0.18 * (u * u * (3 - 2 * u));
+                }
+                mcSp.setScale(s);
+              }
+            } else if (mcSp.scaleX !== 1 || mcSp.scaleY !== 1) {
+              mcSp.setScale(1);
+            }
 
             // Machine status tint & beacon
             if (scram) {
@@ -656,6 +838,9 @@ function installCleanroomMethods(targetProto) {
               bcSp.setVisible(false);
             }
           } else {
+            this._prevMachineKey[poolIdx] = 0;
+            this._placePopAge[poolIdx] = 0;
+            if (mcSp.scaleX !== 1 || mcSp.scaleY !== 1) mcSp.setScale(1);
             if (mcSp.visible) mcSp.setVisible(false);
             if (bcSp.visible) bcSp.setVisible(false);
           }
@@ -789,6 +974,32 @@ function installCleanroomMethods(targetProto) {
         this._dockSignature = dockSig;
         this._redrawFoupRails(state, dim);
       }
+
+      // Wafer Vault jackpot sparkle on vaultedGood increment (rate-limited ~3/sec)
+      if (this._vaultJackpotCooldown > 0) {
+        this._vaultJackpotCooldown = Math.max(0, this._vaultJackpotCooldown - dtSec);
+      }
+      const curVaulted = Number(state.vaultedGood) || 0;
+      if (this._prevVaultedGood < 0) {
+        this._prevVaultedGood = curVaulted;
+      } else if (curVaulted > this._prevVaultedGood) {
+        this._prevVaultedGood = curVaulted;
+        if (this._vaultJackpotCooldown <= 0 && vaultCount > 0 && this._vfx) {
+          const burstCount = Math.min(4, vaultCount);
+          for (let v = 0; v < burstCount; v++) {
+            const idx = (this._vaultCursor + v) % vaultCount;
+            const vgx = this._vaultGx[idx];
+            const vgy = this._vaultGy[idx];
+            this._vfx.spawnVaultJackpot((vgx - vgy) * HALF_W, (vgx + vgy) * HALF_H);
+          }
+          this._vaultCursor = (this._vaultCursor + burstCount) % vaultCount;
+          this._vaultJackpotCooldown = 0.33;
+        }
+      } else if (curVaulted < this._prevVaultedGood) {
+        this._prevVaultedGood = curVaulted;
+      }
+
+      this._hasSyncedOnce = true;
     },
 
     _redrawFoupRails(state, dim) {
@@ -1061,6 +1272,15 @@ export function createCleanroomGame(containerEl, hooks = {}) {
     },
     triggerPrestigeVfx() {
       scene.triggerPrestigeVfx();
+    },
+    triggerCelebrationVfx(intensity = 1) {
+      scene.triggerCelebrationVfx(intensity);
+    },
+    setPaintDragMode(enabled) {
+      scene.setPaintDragMode(enabled);
+    },
+    getPaintDragMode() {
+      return scene.getPaintDragMode();
     },
     centerCamera() {
       scene.centerCamera();
