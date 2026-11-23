@@ -59,7 +59,14 @@ function createFallbackAudioEngine() {
       muted = Boolean(m);
     },
     getState() {
-      return { volume, muted, unlocked: false };
+      return {
+        unlocked: false,
+        vol: volume,
+        mute: muted,
+        volume,
+        muted,
+        contextState: 'unavailable',
+      };
     },
     updateTelemetry() {},
     playClick() {},
@@ -1489,7 +1496,10 @@ async function bootCommandDeck() {
   const flushOnLeave = () => {
     if (dailyState.active) {
       saveDailyProgress();
-    } else {
+    } else if (
+      localStorage.getItem('swarm_tycoon_save_v1') !== null &&
+      document.cookie.includes('krunked-cookie-vault-v1=')
+    ) {
       forceSave();
     }
   };

@@ -264,7 +264,7 @@ export class AudioEngine {
 
   /**
    * Returns current audio engine state snapshot.
-   * @returns {{ unlocked: boolean, vol: number, mute: boolean, contextState: string }}
+   * @returns {{ unlocked: boolean, vol: number, mute: boolean, volume: number, muted: boolean, contextState: string }}
    */
   getState() {
     const ctx = this._ctx;
@@ -272,6 +272,8 @@ export class AudioEngine {
       unlocked: Boolean(!this._destroyed && ctx && ctx.state === 'running'),
       vol: this._vol,
       mute: this._mute,
+      volume: this._vol,
+      muted: this._mute,
       contextState: ctx ? String(ctx.state) : 'unavailable',
     };
   }
