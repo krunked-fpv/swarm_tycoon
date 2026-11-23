@@ -30,6 +30,13 @@ const MAX_FLEET_LEVEL = 500;
 const MAX_PRESTIGE_LEVEL = 1000;
 const PRESTIGE_SLOTS = 9;
 const AGENT_SLOTS = 4;
+const MAX_EXPEDITION_MASK = 0xffffff;
+const DEFAULT_EXPEDITION = Object.freeze({
+  clearedMask: 0,
+  bagMask: 0,
+  secretUnlocked: false,
+  secretBest: 0,
+});
 
 const textEncoder = new TextEncoder();
 
@@ -289,6 +296,18 @@ function sanitizeEntropiesArray(arr) {
   return out;
 }
 
+function sanitizeExpedition(exp) {
+  if (!exp || typeof exp !== 'object') {
+    return { ...DEFAULT_EXPEDITION };
+  }
+  return {
+    clearedMask: clampInt(exp.clearedMask, 0, MAX_EXPEDITION_MASK, 0),
+    bagMask: clampInt(exp.bagMask, 0, MAX_EXPEDITION_MASK, 0),
+    secretUnlocked: Boolean(exp.secretUnlocked),
+    secretBest: clampInt(exp.secretBest, 0, Number.MAX_SAFE_INTEGER, 0),
+  };
+}
+
 function inferTierFromGridSize(gridSize) {
   if (gridSize <= 8) return 1;
   if (gridSize <= 12) return 2;
@@ -372,6 +391,7 @@ export function buildCanonicalCampaignRecord(inputState, nowMs = Date.now()) {
       vol: clampFloat(audioSrc.vol, 0, 1, 0.6),
       mute: Boolean(audioSrc.mute),
     },
+    expedition: sanitizeExpedition(src.expedition),
     layout,
     bp,
   };
@@ -450,6 +470,27 @@ export function validatePrimarySaveRecord(raw) {
     return { ok: false, error: 'Invalid audio state' };
   }
 
+  let expedition = { ...DEFAULT_EXPEDITION };
+  if (raw.expedition !== undefined) {
+    if (!isPlainObject(raw.expedition)) {
+      return { ok: false, error: 'Invalid expedition object' };
+    }
+    const { clearedMask, bagMask, secretUnlocked, secretBest } = raw.expedition;
+    if (!Number.isInteger(clearedMask) || clearedMask < 0 || clearedMask > MAX_EXPEDITION_MASK) {
+      return { ok: false, error: 'Invalid expedition.clearedMask' };
+    }
+    if (!Number.isInteger(bagMask) || bagMask < 0 || bagMask > MAX_EXPEDITION_MASK) {
+      return { ok: false, error: 'Invalid expedition.bagMask' };
+    }
+    if (typeof secretUnlocked !== 'boolean') {
+      return { ok: false, error: 'Invalid expedition.secretUnlocked' };
+    }
+    if (!Number.isSafeInteger(secretBest) || secretBest < 0) {
+      return { ok: false, error: 'Invalid expedition.secretBest' };
+    }
+    expedition = { clearedMask, bagMask, secretUnlocked, secretBest };
+  }
+
   if (typeof raw.bp !== 'string') {
     return { ok: false, error: 'Missing blueprint string' };
   }
@@ -523,6 +564,7 @@ export function validatePrimarySaveRecord(raw) {
     entropies: [...raw.entropies],
     paperclips: raw.paperclips,
     audio: { vol: raw.audio.vol, mute: raw.audio.mute },
+    expedition,
     layout: {
       gridSize: decoded.gridSize,
       tier: decoded.tier,
@@ -592,6 +634,33 @@ function validateAndDecodeCookie(rawCookieVal) {
   if (typeof parsed.mute !== 'boolean') {
     return null;
   }
+
+  let expedition = { ...DEFAULT_EXPEDITION };
+  if (parsed.xp !== undefined) {
+    if (!Array.isArray(parsed.xp) || parsed.xp.length !== 4) {
+      return null;
+    }
+    const [clearedMask, bagMask, secretFlag, secretBest] = parsed.xp;
+    if (!Number.isInteger(clearedMask) || clearedMask < 0 || clearedMask > MAX_EXPEDITION_MASK) {
+      return null;
+    }
+    if (!Number.isInteger(bagMask) || bagMask < 0 || bagMask > MAX_EXPEDITION_MASK) {
+      return null;
+    }
+    if (secretFlag !== 0 && secretFlag !== 1) {
+      return null;
+    }
+    if (!Number.isSafeInteger(secretBest) || secretBest < 0) {
+      return null;
+    }
+    expedition = {
+      clearedMask,
+      bagMask,
+      secretUnlocked: secretFlag === 1,
+      secretBest,
+    };
+  }
+
   if (typeof parsed.bp !== 'string') {
     return null;
   }
@@ -621,6 +690,7 @@ function validateAndDecodeCookie(rawCookieVal) {
     entropies: [0, 0, 0, 0],
     paperclips: 0,
     audio: { vol: parsed.vol, mute: parsed.mute },
+    expedition,
     layout: {
       gridSize: decoded.gridSize,
       tier: decoded.tier,
@@ -634,6 +704,7 @@ function validateAndDecodeCookie(rawCookieVal) {
 }
 
 function buildEncodedCookieString(primaryState) {
+  const exp = sanitizeExpedition(primaryState.expedition);
   const cookieRecord = {
     v: 1,
     tClose: primaryState.tClose,
@@ -648,6 +719,7 @@ function buildEncodedCookieString(primaryState) {
     agents: primaryState.agents,
     vol: Math.round(primaryState.audio.vol * 1000) / 1000,
     mute: primaryState.audio.mute,
+    xp: [exp.clearedMask, exp.bagMask, exp.secretUnlocked ? 1 : 0, exp.secretBest],
     bp: primaryState.bp,
   };
   const signed = signPayload(cookieRecord);
@@ -829,12 +901,18 @@ function writeIndexedDbBestEffort(idb, key, value) {
 }
 
 function statesEquivalent(primaryState, cookieState) {
+  const pe = primaryState.expedition ?? DEFAULT_EXPEDITION;
+  const ce = cookieState.expedition ?? DEFAULT_EXPEDITION;
   return (
     bsCmp(primaryState.lifetimeFlops, cookieState.lifetimeFlops) === 0 &&
     primaryState.tClose === cookieState.tClose &&
     primaryState.bp === cookieState.bp &&
     bsCmp(primaryState.dies, cookieState.dies) === 0 &&
-    primaryState.shards === cookieState.shards
+    primaryState.shards === cookieState.shards &&
+    pe.clearedMask === ce.clearedMask &&
+    pe.bagMask === ce.bagMask &&
+    Boolean(pe.secretUnlocked) === Boolean(ce.secretUnlocked) &&
+    pe.secretBest === ce.secretBest
   );
 }
 
